@@ -352,53 +352,93 @@ def page_dashboard(db: Session, current_user: str, role: str):
 def page_new_ticket(db: Session, current_user: str):
     st.subheader("Create New Ticket")
 
-    # --- Lookup panel (safe: uses separate keys from the main form) ---
+    # --- Lookup panel (separate from the actual form) ---
     with st.expander("Lookup existing customer", expanded=True):
-        s1, s2, s3 = st.columns([1, 1, 0.4])
+        s1, s2, s3, s4 = st.columns([1, 1, 0.5, 0.5])
         with s1:
             search_acct = st.text_input("Account Number (search)", key="lookup_acct")
         with s2:
             search_name = st.text_input("Customer Name (search)", key="lookup_name")
         with s3:
-            if st.button("🔍 Lookup", key="lookup_btn"):
-                acct = (st.session_state.get("lookup_acct") or "").strip()
-                name = (st.session_state.get("lookup_name") or "").strip()
+            lookup_clicked = st.button("🔍 Lookup", key="lookup_btn")
+        with s4:
+            if st.button("Clear", key="lookup_clear_btn"):
+                for k in ["lookup_acct", "lookup_name", "lookup_matches", "lookup_pick_idx"]:
+                    st.session_state.pop(k, None)
+                st.info("Lookup cleared.")
 
-                customer = None
-                qry = db.query(Customer)
+        if lookup_clicked:
+            acct = (st.session_state.get("lookup_acct") or "").strip()
+            name = (st.session_state.get("lookup_name") or "").strip()
 
-                # Prefer exact account match if provided
-                if acct:
-                    customer = qry.filter(Customer.account_number == acct).first()
+            matches = []
+            qry = db.query(Customer)
 
-                # Fallback: name contains (case-insensitive)
-                if not customer and name:
-                    from sqlalchemy import func
-                    matches = (
-                        qry.filter(func.lower(Customer.name).ilike(f"%{name.lower()}%"))
-                           .order_by(Customer.name.asc())
-                           .all()
-                    )
-                    if len(matches) == 1:
-                        customer = matches[0]
-                    elif len(matches) > 1:
-                        # Keep it simple: pick the first but tell the user to refine if needed
-                        customer = matches[0]
-                        st.info(f"Found {len(matches)} matches for '{name}'. "
-                                f"Using the first result: {customer.name} ({customer.account_number}). "
-                                f"Refine the search to narrow down.")
+            # Prefer exact account match if provided
+            if acct:
+                c = qry.filter(Customer.account_number == acct).first()
+                if c:
+                    st.session_state["new_acct"] = c.account_number or ""
+                    st.session_state["new_name"] = c.name or ""
+                    st.session_state["new_phone"] = c.phone or ""
+                    st.success(f"Loaded customer: {c.name or c.account_number}")
+                    st.rerun()
 
-                if customer:
-                    # Push values into the actual form fields then rerun so widgets render with those values
-                    st.session_state["new_acct"] = customer.account_number or ""
-                    st.session_state["new_name"] = customer.name or ""
-                    st.session_state["new_phone"] = customer.phone or ""
-                    st.success(f"Loaded customer: {customer.name or customer.account_number}")
+            # Otherwise search by name (contains, case-insensitive)
+            if name:
+                from sqlalchemy import func
+                found = (qry.filter(func.lower(Customer.name).ilike(f"%{name.lower()}%"))
+                            .order_by(Customer.name.asc())
+                            .limit(50)
+                            .all())
+                if len(found) == 0:
+                    st.warning("No matching customer found. Try refining the name.")
+                elif len(found) == 1:
+                    c = found[0]
+                    st.session_state["new_acct"] = c.account_number or ""
+                    st.session_state["new_name"] = c.name or ""
+                    st.session_state["new_phone"] = c.phone or ""
+                    st.success(f"Loaded customer: {c.name or c.account_number}")
                     st.rerun()
                 else:
-                    st.warning("No matching customer found. Try Account # or refine the Customer Name.")
+                    # Store lightweight match info in session so we can render a picker
+                    st.session_state["lookup_matches"] = [
+                        {
+                            "id": c.id,
+                            "account_number": c.account_number or "",
+                            "name": c.name or "",
+                            "phone": c.phone or "",
+                            "email": c.email or "",
+                            "service_type": c.service_type or "",
+                        }
+                        for c in found
+                    ]
+                    st.info(f"Found {len(found)} matches. Pick one below.")
 
-    # --- Main form fields (read from session_state populated by lookup) ---
+        # If we have multiple matches, show a selector
+        matches = st.session_state.get("lookup_matches", [])
+        if isinstance(matches, list) and len(matches) > 1:
+            labels = [
+                f'{m["name"]}  —  {m["account_number"]}  —  {m["phone"]}'
+                for m in matches
+            ]
+            idx = st.selectbox(
+                "Select customer",
+                options=list(range(len(matches))),
+                format_func=lambda i: labels[i],
+                key="lookup_pick_idx",
+            )
+            if st.button("Use selected", key="use_selected_btn"):
+                m = matches[idx]
+                st.session_state["new_acct"] = m["account_number"]
+                st.session_state["new_name"] = m["name"]
+                st.session_state["new_phone"] = m["phone"]
+                # Clear matches to hide the picker next run
+                st.session_state.pop("lookup_matches", None)
+                st.success(f'Loaded customer: {m["name"]} ({m["account_number"]})')
+                st.rerun()
+
+    # --- Main form (reads values set by lookup) ---
     customer_name = st.text_input("Customer Name", key="new_name")
     account_number = st.text_input("Account Number", key="new_acct")
     phone = st.text_input("Phone", key="new_phone")
