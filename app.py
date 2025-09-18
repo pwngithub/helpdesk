@@ -146,13 +146,19 @@ def page_dashboard(db: Session, current_user: str):
                                   key="dash_status")
         priorities = f2.multiselect("Priority", PRIORITY_ORDER, key="dash_priority")
         agent = f3.text_input("Assigned To contains", "", key="dash_agent")
-        acct = f4.text_input("Account # contains", "", key="dash_acct")
+        search = f4.text_input("Search (Key / Customer / Phone)", "", key="dash_search")
 
     q = db.query(Ticket)
     if statuses: q = q.filter(Ticket.status.in_(statuses))
     if priorities: q = q.filter(Ticket.priority.in_(priorities))
     if agent: q = q.filter(Ticket.assigned_to.ilike(f"%{agent}%"))
-    if acct: q = q.filter(Ticket.account_number.ilike(f"%{acct}%"))
+    if search:
+        like = f"%{search}%"
+        q = q.filter(
+            (Ticket.ticket_key.ilike(like)) |
+            (Ticket.customer_name.ilike(like)) |
+            (Ticket.phone.ilike(like))
+        )
 
     rows = q.order_by(Ticket.created_at.desc()).all()
     render_df_html(dataframe_with_badges(rows))
