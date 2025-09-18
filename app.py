@@ -79,6 +79,7 @@ STATUS_COLOR = {
 PRIORITY_COLOR = {"Low": "gray", "Medium": "blue", "High": "orange", "Critical": "red"}
 
 ASSIGNEES = [
+    "All",  # ✅ new option for filters
     "Billing", "Support", "Sales", "BJ", "Megan",
     "Billy", "Gillian", "Gabby", "Chuck", "Aidan"
 ]
@@ -106,7 +107,6 @@ def dataframe_with_badges(rows: List[Ticket]) -> pd.DataFrame:
     data = []
     for t in rows:
         sla_txt, sla_class = sla_countdown(now, t.sla_due)
-        # ✅ Use last note if available, else description
         latest_note = t.description or "-"
         if t.events:
             note_events = [e for e in t.events if e.note]
@@ -150,13 +150,14 @@ def page_dashboard(db: Session, current_user: str):
                                   default=["Open","In Progress","Escalated","On Hold"],
                                   key="dash_status")
         priorities = f2.multiselect("Priority", PRIORITY_ORDER, key="dash_priority")
-        agent = f3.text_input("Assigned To contains", "", key="dash_agent")
+        assignee_filter = f3.selectbox("Assigned To", ASSIGNEES, key="dash_assignee")
         search = f4.text_input("Search (Key / Customer / Phone)", "", key="dash_search")
 
     q = db.query(Ticket)
     if statuses: q = q.filter(Ticket.status.in_(statuses))
     if priorities: q = q.filter(Ticket.priority.in_(priorities))
-    if agent: q = q.filter(Ticket.assigned_to.ilike(f"%{agent}%"))
+    if assignee_filter and assignee_filter != "All":
+        q = q.filter(Ticket.assigned_to == assignee_filter)
     if search:
         like = f"%{search}%"
         q = q.filter(
@@ -170,7 +171,7 @@ def page_dashboard(db: Session, current_user: str):
 
 def page_new_ticket(db: Session):
     st.subheader("Create New Ticket")
-    with st.form("new_ticket"):
+    with st.form("new_ticket", clear_on_submit=False):
         customer_name = st.text_input("Customer Name", key="new_name")
         account_number = st.text_input("Account Number", key="new_acct")
         phone = st.text_input("Phone", key="new_phone")
@@ -179,7 +180,7 @@ def page_new_ticket(db: Session):
         call_reason = st.selectbox("Call Reason", ["outage","repair","billing","upgrade","cancel","new service","other"], key="new_reason")
         priority = st.selectbox("Priority", PRIORITY_ORDER, index=1, key="new_priority")
         description = st.text_area("Description / Notes", height=120, key="new_desc")
-        assigned_to = st.selectbox("Assign To", ASSIGNEES, key="new_assign")
+        assigned_to = st.selectbox("Assign To", ASSIGNEES[1:], key="new_assign")  # exclude "All"
 
         submitted = st.form_submit_button("Create Ticket")
         if submitted:
@@ -200,20 +201,23 @@ def page_new_ticket(db: Session):
                 sla_due=compute_sla_due(priority, created_at),
             )
             db.add(t); db.commit(); db.refresh(t)
-            db.add(TicketEvent(ticket_id=t.id, actor=assigned_to or "system", action="create", note="Ticket created")); db.commit()
+            db.add(TicketEvent(ticket_id=t.id, actor=assigned_to, action="create", note="Ticket created")); db.commit()
             st.success(f"✅ Ticket created: {t.ticket_key}")
 
 def page_manage(db: Session, current_user: str):
-    glob_q = st.text_input("Global search", "", key="manage_search")
+    glob_q = st.text_input("Global search (Key / Customer / Phone / Desc)", "", key="manage_search")
+    assignee_filter = st.selectbox("Assigned To", ASSIGNEES, key="manage_assignee")
     q = db.query(Ticket)
     if glob_q.strip():
         like = f"%{glob_q}%"
         q = q.filter(
-            (Ticket.customer_name.ilike(like))
-            | (Ticket.account_number.ilike(like))
+            (Ticket.ticket_key.ilike(like))
+            | (Ticket.customer_name.ilike(like))
             | (Ticket.phone.ilike(like))
             | (Ticket.description.ilike(like))
         )
+    if assignee_filter and assignee_filter != "All":
+        q = q.filter(Ticket.assigned_to == assignee_filter)
 
     statuses = st.multiselect("Status", STATUS_ORDER, default=[], key="manage_status")
     if statuses: q = q.filter(Ticket.status.in_(statuses))
@@ -255,14 +259,14 @@ def page_ticket_detail(db: Session, ticket_key: str):
         st.write("_No notes yet._")
 
     # Update form
-    with st.form("update_ticket"):
+    with st.form("update_ticket", clear_on_submit=False):
         c1, c2, c3 = st.columns(3)
         new_status = c1.selectbox("Status", STATUS_ORDER, index=STATUS_ORDER.index(t.status), key="detail_status")
         new_priority = c2.selectbox("Priority", PRIORITY_ORDER, index=PRIORITY_ORDER.index(t.priority), key="detail_priority")
         new_assigned = c3.selectbox(
             "Assigned To",
-            ASSIGNEES,
-            index=ASSIGNEES.index(t.assigned_to) if t.assigned_to in ASSIGNEES else 0,
+            ASSIGNEES[1:],  # exclude "All"
+            index=ASSIGNEES[1:].index(t.assigned_to) if t.assigned_to in ASSIGNEES else 0,
             key="detail_assigned"
         )
 
