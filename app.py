@@ -141,19 +141,22 @@ def login():
 def badge(text: str, color: str) -> str:
     return f'<span class="badge {color}">{text}</span>'
 
-def sla_countdown(now: datetime, due: datetime | None) -> Tuple[str, str]:
-    if not due:
-        return "-", "gray"
-    delta = due - now
-    hours = delta.total_seconds() / 3600
-    if hours < 0:
-        return f"{abs(int(hours))}h overdue", "red"
-    if hours <= 4:
-        return f"{int(hours))}h left", "orange"
-    days = int(hours // 24)
-    if days >= 1:
-        return f"{days}d left", "green"
-    return f"{int(hours)}h left", "green"
+ def sla_countdown(now, due):
+     if not due:
+         return "-", "gray"
+     delta = due - now
+     hours = delta.total_seconds() / 3600
+     if hours < 0:
+         return f"{abs(int(hours))}h overdue", "red"
+-    if hours <= 4:
+-        return f"{int(hours))}h left", "orange"
++    if hours <= 4:
++        return f"{int(hours)}h left", "orange"
+     days = int(hours // 24)
+     if days >= 1:
+         return f"{days}d left", "green"
+     return f"{int(hours)}h left", "green"
+
 
 def dataframe_with_badges(rows: List[Ticket]) -> pd.DataFrame:
     now = datetime.utcnow()
