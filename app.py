@@ -78,6 +78,11 @@ STATUS_COLOR = {
 }
 PRIORITY_COLOR = {"Low": "gray", "Medium": "blue", "High": "orange", "Critical": "red"}
 
+ASSIGNEES = [
+    "Billing", "Support", "Sales", "BJ", "Megan",
+    "Billy", "Gillian", "Gabby", "Chuck", "Aidan"
+]
+
 def badge(text: str, color: str) -> str:
     return f'<span class="badge {color}">{text}</span>'
 
@@ -174,7 +179,7 @@ def page_new_ticket(db: Session):
         call_reason = st.selectbox("Call Reason", ["outage","repair","billing","upgrade","cancel","new service","other"], key="new_reason")
         priority = st.selectbox("Priority", PRIORITY_ORDER, index=1, key="new_priority")
         description = st.text_area("Description / Notes", height=120, key="new_desc")
-        assigned_to = st.text_input("Assign to", key="new_assign")
+        assigned_to = st.selectbox("Assign To", ASSIGNEES, key="new_assign")
 
         submitted = st.form_submit_button("Create Ticket")
         if submitted:
@@ -191,7 +196,7 @@ def page_new_ticket(db: Session):
                 description=description.strip(),
                 status="Open",
                 priority=priority,
-                assigned_to=assigned_to.strip(),
+                assigned_to=assigned_to,
                 sla_due=compute_sla_due(priority, created_at),
             )
             db.add(t); db.commit(); db.refresh(t)
@@ -254,7 +259,12 @@ def page_ticket_detail(db: Session, ticket_key: str):
         c1, c2, c3 = st.columns(3)
         new_status = c1.selectbox("Status", STATUS_ORDER, index=STATUS_ORDER.index(t.status), key="detail_status")
         new_priority = c2.selectbox("Priority", PRIORITY_ORDER, index=PRIORITY_ORDER.index(t.priority), key="detail_priority")
-        new_assigned = c3.text_input("Assigned To", value=t.assigned_to or "", key="detail_assigned")
+        new_assigned = c3.selectbox(
+            "Assigned To",
+            ASSIGNEES,
+            index=ASSIGNEES.index(t.assigned_to) if t.assigned_to in ASSIGNEES else 0,
+            key="detail_assigned"
+        )
 
         new_note = st.text_area("Add Note", key="detail_note")
         submitted = st.form_submit_button("💾 Save Changes")
@@ -262,7 +272,7 @@ def page_ticket_detail(db: Session, ticket_key: str):
         if submitted:
             t.status = new_status
             t.priority = new_priority
-            t.assigned_to = new_assigned.strip()
+            t.assigned_to = new_assigned
             db.commit()
 
             if new_note.strip():
