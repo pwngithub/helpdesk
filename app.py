@@ -1,7 +1,10 @@
 
 import os
 import re
+import io
 import json
+import urllib.request
+import urllib.error
 from datetime import datetime, timedelta
 from typing import List, Tuple, Dict
 
@@ -146,7 +149,7 @@ def sla_countdown(now: datetime, due: datetime | None) -> Tuple[str, str]:
     if hours < 0:
         return f"{abs(int(hours))}h overdue", "red"
     if hours <= 4:
-        return f"{int(hours)}h left", "orange"
+        return f"{int(hours))}h left", "orange"
     days = int(hours // 24)
     if days >= 1:
         return f"{days}d left", "green"
@@ -189,20 +192,56 @@ def filter_by_role(query, role: str, user: str):
     allowed = set(GROUP_MEMBERS.get(role, []))
     return query.filter(Ticket.assigned_to.in_(allowed)) if allowed else query.filter(Ticket.assigned_to == user)
 
-# ---------- Google Sheets Import Helpers ----------
-def csv_export_url_from_gsheets(url: str) -> str:
-    m = re.search(r'/spreadsheets/d/([a-zA-Z0-9-_]+)', url)
+# ---------- Google Sheets Import (robust) ----------
+def build_candidate_csv_urls(sheet_url: str) -> list[str]:
+    urls = []
+    # Already a published-to-web URL?
+    if "/spreadsheets/d/e/" in sheet_url and "pub" in sheet_url:
+        if "output=csv" in sheet_url:
+            urls.append(sheet_url)
+        else:
+            if "output=" in sheet_url:
+                urls.append(re.sub(r"output=[^&]+", "output=csv", sheet_url))
+            else:
+                sep = "&" if "?" in sheet_url else "?"
+                urls.append(f"{sheet_url}{sep}output=csv")
+        return urls
+
+    # Standard edit URL
+    m = re.search(r'/spreadsheets/d/([a-zA-Z0-9-_]+)', sheet_url)
     if not m:
-        raise ValueError("Invalid Google Sheets URL.")
+        return urls
     sheet_id = m.group(1)
-    mgid = re.search(r'gid=([0-9]+)', url)
-    gid = mgid.group(1) if mgid else "0"
-    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+    mgid = re.search(r'gid=([0-9]+)', sheet_url)
+    if mgid:
+        gid = mgid.group(1)
+        urls.append(f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}")
+    urls.append(f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv")
+    urls.append(f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0")
+    return urls
+
+def read_csv_from_url(url: str, timeout: int = 20) -> pd.DataFrame:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = resp.read()
+    text = data.decode("utf-8", errors="ignore")
+    return pd.read_csv(io.StringIO(text))
 
 def fetch_customers_from_sheet(sheet_url: str) -> pd.DataFrame:
-    csv_url = csv_export_url_from_gsheets(sheet_url)
-    df = pd.read_csv(csv_url)
-    return df
+    candidates = build_candidate_csv_urls(sheet_url)
+    last_err = None
+    for u in candidates:
+        try:
+            return read_csv_from_url(u)
+        except Exception as e:
+            last_err = e
+    raise ValueError(
+        "Could not download CSV from Google Sheets. "
+        "Tips: (1) In Sheets, click the correct tab then copy the URL so it contains `gid=`. "
+        "(2) Ensure Share is set to 'Anyone with the link – Viewer'. "
+        "(3) Or use File → Share → Publish to the web → CSV and paste that link. "
+        f"Last error: {last_err}"
+    )
 
 def normalize_customer_df(df: pd.DataFrame) -> pd.DataFrame:
     cols = {c: str(c).strip().lower() for c in df.columns}
@@ -483,22 +522,34 @@ def page_user_management():
 def page_customers_admin(default_url: str = ""):
     st.subheader("👥 Customers (Admin Only)")
     st.caption("Import/Sync customers from Google Sheets and browse them here.")
+    st.info("Tips: Click the correct sheet tab in Google Sheets and copy the URL so it includes **gid=...**. Or use **File → Share → Publish to the web → CSV** and paste that published link. You can also upload a CSV below.")
 
-    sheet_url = st.text_input("Google Sheet URL", value=default_url or "")
+    sheet_url = st.text_input("Google Sheet URL (viewable or published CSV link)", value=default_url or "")
     c1, c2 = st.columns(2)
     with c1:
         preview = st.button("🔎 Preview")
     with c2:
         do_import = st.button("⬇️ Import / Upsert")
 
-    if sheet_url and (preview or do_import):
+    uploaded = st.file_uploader("…or upload a CSV file", type=["csv"])
+
+    df_norm = None
+    if uploaded is not None:
+        try:
+            df_raw = pd.read_csv(uploaded)
+            df_norm = normalize_customer_df(df_raw)
+            st.success("CSV uploaded.")
+        except Exception as e:
+            st.error(f"Failed to parse uploaded CSV: {e}")
+
+    if sheet_url and (preview or do_import) and df_norm is None:
         try:
             df_raw = fetch_customers_from_sheet(sheet_url)
             df_norm = normalize_customer_df(df_raw)
         except Exception as e:
             st.error(f"Failed to read sheet: {e}")
-            return
 
+    if df_norm is not None:
         st.write("**Preview (first 20 rows after normalization):**")
         st.dataframe(df_norm.head(20))
 
@@ -506,33 +557,6 @@ def page_customers_admin(default_url: str = ""):
             with next(get_db()) as db:
                 ins, upd = upsert_customers(db, df_norm)
             st.success(f"✅ Import complete: {ins} inserted, {upd} updated")
-
-    st.write("---")
-    st.write("### Browse Customers")
-    q = st.text_input("Search (Account / Name / Phone)", "")
-    with next(get_db()) as db:
-        qry = db.query(Customer)
-        if q.strip():
-            like = f"%{q}%"
-            from sqlalchemy import or_
-            qry = qry.filter(
-                or_(
-                    Customer.account_number.ilike(like),
-                    Customer.name.ilike(like),
-                    Customer.phone.ilike(like),
-                )
-            )
-        rows = qry.order_by(Customer.name.asc()).limit(500).all()
-        data = [{
-            "Account #": c.account_number,
-            "Name": c.name,
-            "Phone": c.phone,
-            "Email": c.email,
-            "Service": c.service_type,
-            "Address": c.address,
-            "Notes": c.notes,
-        } for c in rows]
-        st.dataframe(pd.DataFrame(data))
 
 # ---------- App ----------
 CURRENT_USER = st.session_state.get("user", None)
