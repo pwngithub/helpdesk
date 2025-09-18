@@ -171,53 +171,37 @@ def page_dashboard(db: Session, current_user: str):
 def page_new_ticket(db: Session):
     st.subheader("Create New Ticket")
 
-    # 🚫 Prevent Enter from submitting the form
-    st.markdown("""
-        <script>
-        const forms = window.parent.document.querySelectorAll('form');
-        forms.forEach(form => {
-            form.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
-                    e.preventDefault();
-                }
-            });
-        });
-        </script>
-    """, unsafe_allow_html=True)
+    # 🚫 No form wrapper — prevents Enter from auto-submitting
+    customer_name = st.text_input("Customer Name", key="new_name")
+    account_number = st.text_input("Account Number", key="new_acct")
+    phone = st.text_input("Phone", key="new_phone")
+    service_type = st.selectbox("Service Type", ["Fiber","DSL","Fixed Wireless","TV","Voice","Other"], key="new_service")
+    call_source = st.selectbox("Call Source", ["phone","email","chat","walk-in"], key="new_source")
+    call_reason = st.selectbox("Call Reason", ["outage","repair","billing","upgrade","cancel","new service","other"], key="new_reason")
+    priority = st.selectbox("Priority", PRIORITY_ORDER, index=1, key="new_priority")
+    description = st.text_area("Description / Notes", height=120, key="new_desc")
+    assigned_to = st.selectbox("Assign To", ASSIGNEES[1:], key="new_assign")  # exclude "All"
 
-    with st.form("new_ticket", clear_on_submit=False):
-        customer_name = st.text_input("Customer Name", key="new_name")
-        account_number = st.text_input("Account Number", key="new_acct")
-        phone = st.text_input("Phone", key="new_phone")
-        service_type = st.selectbox("Service Type", ["Fiber","DSL","Fixed Wireless","TV","Voice","Other"], key="new_service")
-        call_source = st.selectbox("Call Source", ["phone","email","chat","walk-in"], key="new_source")
-        call_reason = st.selectbox("Call Reason", ["outage","repair","billing","upgrade","cancel","new service","other"], key="new_reason")
-        priority = st.selectbox("Priority", PRIORITY_ORDER, index=1, key="new_priority")
-        description = st.text_area("Description / Notes", height=120, key="new_desc")
-        assigned_to = st.selectbox("Assign To", ASSIGNEES[1:], key="new_assign")  # exclude "All"
-
-        submitted = st.form_submit_button("Create Ticket", use_container_width=True)
-
-        if submitted:
-            created_at = datetime.utcnow()
-            t = Ticket(
-                ticket_key=f"TCK-{int(created_at.timestamp())}",
-                created_at=created_at,
-                customer_name=customer_name.strip(),
-                account_number=account_number.strip(),
-                phone=phone.strip(),
-                service_type=service_type,
-                call_source=call_source,
-                call_reason=call_reason,
-                description=description.strip(),
-                status="Open",
-                priority=priority,
-                assigned_to=assigned_to,
-                sla_due=compute_sla_due(priority, created_at),
-            )
-            db.add(t); db.commit(); db.refresh(t)
-            db.add(TicketEvent(ticket_id=t.id, actor=assigned_to, action="create", note="Ticket created")); db.commit()
-            st.success(f"✅ Ticket created: {t.ticket_key}")
+    if st.button("Create Ticket", use_container_width=True):
+        created_at = datetime.utcnow()
+        t = Ticket(
+            ticket_key=f"TCK-{int(created_at.timestamp())}",
+            created_at=created_at,
+            customer_name=customer_name.strip(),
+            account_number=account_number.strip(),
+            phone=phone.strip(),
+            service_type=service_type,
+            call_source=call_source,
+            call_reason=call_reason,
+            description=description.strip(),
+            status="Open",
+            priority=priority,
+            assigned_to=assigned_to,
+            sla_due=compute_sla_due(priority, created_at),
+        )
+        db.add(t); db.commit(); db.refresh(t)
+        db.add(TicketEvent(ticket_id=t.id, actor=assigned_to, action="create", note="Ticket created")); db.commit()
+        st.success(f"✅ Ticket created: {t.ticket_key}")
 
 def page_manage(db: Session, current_user: str):
     glob_q = st.text_input("Global search (Key / Customer / Phone / Desc)", "", key="manage_search")
