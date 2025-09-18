@@ -249,8 +249,7 @@ def page_reports(db: Session, current_user: str, role: str):
     q = filter_by_role(db.query(Ticket), role, current_user)
     rows: List[Ticket] = q.order_by(Ticket.created_at.asc()).all()
     if not rows:
-        st.info("No tickets yet.")
-        return
+        st.info("No tickets yet."); return
     df = pd.DataFrame([{"created_at": t.created_at, "status": t.status} for t in rows])
     df["created_date"] = df["created_at"].dt.date
     last_30 = pd.date_range(datetime.utcnow().date() - timedelta(days=29), periods=30)
@@ -330,22 +329,41 @@ def page_user_management():
 if "user" not in st.session_state:
     login()
 else:
-    CURRENT_USER = st.session_state["user"]; ROLE = st.session_state["role"]
+    CURRENT_USER = st.session_state["user"]
+    ROLE = st.session_state["role"]
+
     st.info(f"👋 Logged in as **{CURRENT_USER}** (Group: {ROLE})")
-    if st.button("Logout"): st.session_state.clear(); st.rerun()
+    if st.button("Logout"):
+        st.session_state.clear()
+        st.rerun()
 
     params = st.query_params
     if "ticket" in params:
         ticket_key = params["ticket"]
-        with next(get_db()) as db: page_ticket_detail(db, ticket_key, CURRENT_USER, ROLE)
+        with next(get_db()) as db:
+            page_ticket_detail(db, ticket_key, CURRENT_USER, ROLE)
     else:
         if ROLE == "Admin":
             tabs = st.tabs(["📊 Dashboard","➕ New Ticket","🛠️ Manage","📈 Reports","👤 User Management"])
         else:
             tabs = st.tabs(["📊 Dashboard","➕ New Ticket","🛠️ Manage","📈 Reports"])
 
-        with tabs[0]: with next(get_db()) as db: page_dashboard(db, CURRENT_USER, ROLE)
-        with tabs[1]: with next(get_db()) as db: page_new_ticket(db, CURRENT_USER)
-        with tabs[2]: with next(get_db()) as db: page_manage(db, CURRENT_USER, ROLE)
-        with tabs[3]: with next(get_db()) as db: page_reports(db, CURRENT_USER, ROLE)
-        if ROLE == "Admin": with tabs[4]: page_user_management()
+        with tabs[0]:
+            with next(get_db()) as db:
+                page_dashboard(db, CURRENT_USER, ROLE)
+
+        with tabs[1]:
+            with next(get_db()) as db:
+                page_new_ticket(db, CURRENT_USER)
+
+        with tabs[2]:
+            with next(get_db()) as db:
+                page_manage(db, CURRENT_USER, ROLE)
+
+        with tabs[3]:
+            with next(get_db()) as db:
+                page_reports(db, CURRENT_USER, ROLE)
+
+        if ROLE == "Admin":
+            with tabs[4]:
+                page_user_management()
