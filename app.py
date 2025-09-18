@@ -352,34 +352,63 @@ def page_dashboard(db: Session, current_user: str, role: str):
 def page_new_ticket(db: Session, current_user: str):
     st.subheader("Create New Ticket")
 
-    # 1) Account # input FIRST (so we can look it up & rerun before rendering name/phone)
-    account_number = st.text_input("Account Number", key="new_acct")
+    # --- Lookup panel (safe: uses separate keys from the main form) ---
+    with st.expander("Lookup existing customer", expanded=True):
+        s1, s2, s3 = st.columns([1, 1, 0.4])
+        with s1:
+            search_acct = st.text_input("Account Number (search)", key="lookup_acct")
+        with s2:
+            search_name = st.text_input("Customer Name (search)", key="lookup_name")
+        with s3:
+            if st.button("🔍 Lookup", key="lookup_btn"):
+                acct = (st.session_state.get("lookup_acct") or "").strip()
+                name = (st.session_state.get("lookup_name") or "").strip()
 
-    if st.button("🔍 Lookup by Account #", key="lookup_btn"):
-        acct = (st.session_state.get("new_acct") or "").strip()
-        if not acct:
-            st.info("Enter an Account #, then click Lookup.")
-        else:
-            c = db.query(Customer).filter(Customer.account_number == acct).first()
-            if c:
-                # Update session state then rerun to safely refresh widgets
-                st.session_state["new_name"] = str(c.name or "")
-                st.session_state["new_phone"] = str(c.phone or "")
-                st.success(f"Loaded customer: {c.name or c.account_number}")
-                st.rerun()
-            else:
-                st.warning("No customer found for that Account #")
+                customer = None
+                qry = db.query(Customer)
 
-    # 2) Now render the rest (these can safely read from session_state)
+                # Prefer exact account match if provided
+                if acct:
+                    customer = qry.filter(Customer.account_number == acct).first()
+
+                # Fallback: name contains (case-insensitive)
+                if not customer and name:
+                    from sqlalchemy import func
+                    matches = (
+                        qry.filter(func.lower(Customer.name).ilike(f"%{name.lower()}%"))
+                           .order_by(Customer.name.asc())
+                           .all()
+                    )
+                    if len(matches) == 1:
+                        customer = matches[0]
+                    elif len(matches) > 1:
+                        # Keep it simple: pick the first but tell the user to refine if needed
+                        customer = matches[0]
+                        st.info(f"Found {len(matches)} matches for '{name}'. "
+                                f"Using the first result: {customer.name} ({customer.account_number}). "
+                                f"Refine the search to narrow down.")
+
+                if customer:
+                    # Push values into the actual form fields then rerun so widgets render with those values
+                    st.session_state["new_acct"] = customer.account_number or ""
+                    st.session_state["new_name"] = customer.name or ""
+                    st.session_state["new_phone"] = customer.phone or ""
+                    st.success(f"Loaded customer: {customer.name or customer.account_number}")
+                    st.rerun()
+                else:
+                    st.warning("No matching customer found. Try Account # or refine the Customer Name.")
+
+    # --- Main form fields (read from session_state populated by lookup) ---
     customer_name = st.text_input("Customer Name", key="new_name")
+    account_number = st.text_input("Account Number", key="new_acct")
     phone = st.text_input("Phone", key="new_phone")
 
-    service_type = st.selectbox("Service Type", ["Fiber","DSL","Fixed Wireless","TV","Voice","Other"])
-    call_source = st.selectbox("Call Source", ["phone","email","chat","walk-in"])
-    call_reason = st.selectbox("Call Reason", ["outage","repair","billing","upgrade","cancel","new service","other"])
-    priority = st.selectbox("Priority", ["Low","Medium","High","Critical"], index=1)
+    service_type = st.selectbox("Service Type", ["Fiber", "DSL", "Fixed Wireless", "TV", "Voice", "Other"])
+    call_source = st.selectbox("Call Source", ["phone", "email", "chat", "walk-in"])
+    call_reason = st.selectbox("Call Reason", ["outage", "repair", "billing", "upgrade", "cancel", "new service", "other"])
+    priority = st.selectbox("Priority", ["Low", "Medium", "High", "Critical"], index=1)
     description = st.text_area("Description / Notes", height=120)
-    assigned_to = st.selectbox("Assign To", ["Billing","Support","Sales","BJ","Megan","Billy","Gillian","Gabby","Chuck","Aidan"])
+    assigned_to = st.selectbox("Assign To", ["Billing", "Support", "Sales", "BJ", "Megan", "Billy", "Gillian", "Gabby", "Chuck", "Aidan"])
 
     if st.button("Create Ticket", use_container_width=True, key="create_ticket_btn"):
         created_at = datetime.utcnow()
@@ -399,7 +428,8 @@ def page_new_ticket(db: Session, current_user: str):
             sla_due=compute_sla_due(priority, created_at),
         )
         db.add(t); db.commit(); db.refresh(t)
-        db.add(TicketEvent(ticket_id=t.id, actor=current_user, action="create", note="Ticket created")); db.commit()
+        db.add(TicketEvent(ticket_id=t.id, actor=current_user, action="create", note="Ticket created"))
+        db.commit()
         st.success(f"✅ Ticket created: {t.ticket_key}")
 
 def page_manage(db: Session, current_user: str, role: str):
