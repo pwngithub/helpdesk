@@ -4,6 +4,18 @@ from datetime import datetime
 
 Base = declarative_base()
 
+class Customer(Base):
+    __tablename__ = "customers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_number = Column(String, unique=True, index=True)
+    name = Column(String, index=True)
+    phone = Column(String)
+    email = Column(String)
+    address = Column(String)
+    service_type = Column(String)
+    notes = Column(String)
+
 class Ticket(Base):
     __tablename__ = "tickets"
 

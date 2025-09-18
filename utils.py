@@ -14,4 +14,7 @@ def compute_sla_due(priority: str, created_at: datetime):
 def fmt_dt(dt: datetime, tz: str = "America/New_York") -> str:
     if not dt:
         return "-"
-    return dt.replace(tzinfo=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
+    try:
+        return dt.replace(tzinfo=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return dt.strftime("%Y-%m-%d %H:%M")
