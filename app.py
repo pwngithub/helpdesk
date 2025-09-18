@@ -60,7 +60,7 @@ st.markdown(
         <img src="{PIONEER_LOGO}" alt="Pioneer Broadband" style="height:42px;">
         <h2>ISP Ticketing</h2>
     </div>
-    """ ,
+    """,
     unsafe_allow_html=True,
 )
 
@@ -96,11 +96,13 @@ def sla_countdown(now: datetime, due: datetime | None) -> Tuple[str, str]:
     return f"{int(hours)}h left", "green"
 
 def dataframe_with_badges(rows: List[Ticket]) -> pd.DataFrame:
+    """Builds ticket dataframe with badges and latest note/description, clickable Key."""
     now = datetime.utcnow()
     data = []
     for t in rows:
         sla_txt, sla_class = sla_countdown(now, t.sla_due)
-        latest_note = "-"
+        # ✅ Use last note if available, else description
+        latest_note = t.description or "-"
         if t.events:
             note_events = [e for e in t.events if e.note]
             if note_events:
@@ -227,6 +229,10 @@ def page_ticket_detail(db: Session, ticket_key: str):
 
     st.markdown(f"### 🎫 {t.ticket_key} — {t.customer_name}")
     st.write(f"**Created:** {fmt_dt(t.created_at, TZ)} | **SLA Due:** {fmt_dt(t.sla_due, TZ) if t.sla_due else '-'}")
+
+    # ✅ Show ticket description
+    st.write("#### Ticket Description")
+    st.markdown(f"> {t.description or '_No description provided._'}")
 
     with st.form("update_ticket"):
         c1, c2, c3 = st.columns(3)
