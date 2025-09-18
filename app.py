@@ -326,12 +326,12 @@ def page_user_management():
             st.success(f"User {del_user} deleted."); st.rerun()
 
 # ---------- App ----------
-if "user" not in st.session_state:
+CURRENT_USER = st.session_state.get("user", None)
+ROLE = st.session_state.get("role", None)
+
+if not CURRENT_USER or not ROLE:
     login()
 else:
-    CURRENT_USER = st.session_state["user"]
-    ROLE = st.session_state["role"]
-
     st.info(f"👋 Logged in as **{CURRENT_USER}** (Group: {ROLE})")
     if st.button("Logout"):
         st.session_state.clear()
