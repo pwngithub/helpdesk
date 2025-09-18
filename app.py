@@ -352,33 +352,36 @@ def page_dashboard(db: Session, current_user: str, role: str):
 def page_new_ticket(db: Session, current_user: str):
     st.subheader("Create New Ticket")
 
-    customer_name = st.text_input("Customer Name", key="new_name")
+    # 1) Account # input FIRST (so we can look it up & rerun before rendering name/phone)
     account_number = st.text_input("Account Number", key="new_acct")
-    phone = st.text_input("Phone", key="new_phone")
 
-    lc1, lc2 = st.columns([1,1])
-    with lc1:
-        if st.button("🔍 Lookup by Account #"):
-            acct = (st.session_state.get("new_acct") or "").strip()
-            if acct:
-                c = db.query(Customer).filter(Customer.account_number == acct).first()
-                if c:
-                    st.session_state["new_name"] = c.name or st.session_state.get("new_name", "")
-                    st.session_state["new_phone"] = c.phone or st.session_state.get("new_phone", "")
-                    st.success(f"Loaded customer: {c.name or c.account_number}")
-                else:
-                    st.warning("No customer found for that Account #")
+    if st.button("🔍 Lookup by Account #", key="lookup_btn"):
+        acct = (st.session_state.get("new_acct") or "").strip()
+        if not acct:
+            st.info("Enter an Account #, then click Lookup.")
+        else:
+            c = db.query(Customer).filter(Customer.account_number == acct).first()
+            if c:
+                # Update session state then rerun to safely refresh widgets
+                st.session_state["new_name"] = str(c.name or "")
+                st.session_state["new_phone"] = str(c.phone or "")
+                st.success(f"Loaded customer: {c.name or c.account_number}")
+                st.rerun()
             else:
-                st.info("Enter an Account #, then click Lookup.")
+                st.warning("No customer found for that Account #")
+
+    # 2) Now render the rest (these can safely read from session_state)
+    customer_name = st.text_input("Customer Name", key="new_name")
+    phone = st.text_input("Phone", key="new_phone")
 
     service_type = st.selectbox("Service Type", ["Fiber","DSL","Fixed Wireless","TV","Voice","Other"])
     call_source = st.selectbox("Call Source", ["phone","email","chat","walk-in"])
     call_reason = st.selectbox("Call Reason", ["outage","repair","billing","upgrade","cancel","new service","other"])
-    priority = st.selectbox("Priority", PRIORITY_ORDER, index=1)
+    priority = st.selectbox("Priority", ["Low","Medium","High","Critical"], index=1)
     description = st.text_area("Description / Notes", height=120)
-    assigned_to = st.selectbox("Assign To", [a for a in ASSIGNEES[1:]])
+    assigned_to = st.selectbox("Assign To", ["Billing","Support","Sales","BJ","Megan","Billy","Gillian","Gabby","Chuck","Aidan"])
 
-    if st.button("Create Ticket", use_container_width=True):
+    if st.button("Create Ticket", use_container_width=True, key="create_ticket_btn"):
         created_at = datetime.utcnow()
         t = Ticket(
             ticket_key=f"TCK-{int(created_at.timestamp())}",
@@ -389,7 +392,7 @@ def page_new_ticket(db: Session, current_user: str):
             service_type=service_type,
             call_source=call_source,
             call_reason=call_reason,
-            description=description.strip(),
+            description=(description or "").strip(),
             status="Open",
             priority=priority,
             assigned_to=assigned_to,
