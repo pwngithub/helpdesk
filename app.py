@@ -79,7 +79,7 @@ STATUS_COLOR = {
 PRIORITY_COLOR = {"Low": "gray", "Medium": "blue", "High": "orange", "Critical": "red"}
 
 ASSIGNEES = [
-    "All",  # ✅ new option for filters
+    "All",  # ✅ for filters
     "Billing", "Support", "Sales", "BJ", "Megan",
     "Billy", "Gillian", "Gabby", "Chuck", "Aidan"
 ]
@@ -102,7 +102,6 @@ def sla_countdown(now: datetime, due: datetime | None) -> Tuple[str, str]:
     return f"{int(hours)}h left", "green"
 
 def dataframe_with_badges(rows: List[Ticket]) -> pd.DataFrame:
-    """Builds ticket dataframe with badges and latest note/description, clickable Key."""
     now = datetime.utcnow()
     data = []
     for t in rows:
@@ -171,6 +170,21 @@ def page_dashboard(db: Session, current_user: str):
 
 def page_new_ticket(db: Session):
     st.subheader("Create New Ticket")
+
+    # 🚫 Prevent Enter from submitting the form
+    st.markdown("""
+        <script>
+        const forms = window.parent.document.querySelectorAll('form');
+        forms.forEach(form => {
+            form.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
+                    e.preventDefault();
+                }
+            });
+        });
+        </script>
+    """, unsafe_allow_html=True)
+
     with st.form("new_ticket", clear_on_submit=False):
         customer_name = st.text_input("Customer Name", key="new_name")
         account_number = st.text_input("Account Number", key="new_acct")
@@ -182,7 +196,8 @@ def page_new_ticket(db: Session):
         description = st.text_area("Description / Notes", height=120, key="new_desc")
         assigned_to = st.selectbox("Assign To", ASSIGNEES[1:], key="new_assign")  # exclude "All"
 
-        submitted = st.form_submit_button("Create Ticket")
+        submitted = st.form_submit_button("Create Ticket", use_container_width=True)
+
         if submitted:
             created_at = datetime.utcnow()
             t = Ticket(
@@ -245,11 +260,9 @@ def page_ticket_detail(db: Session, ticket_key: str):
     st.markdown(f"### 🎫 {t.ticket_key} — {t.customer_name}")
     st.write(f"**Created:** {fmt_dt(t.created_at, TZ)} | **SLA Due:** {fmt_dt(t.sla_due, TZ) if t.sla_due else '-'}")
 
-    # ✅ Ticket description
     st.write("#### Ticket Description")
     st.markdown(f"> {t.description or '_No description provided._'}")
 
-    # ✅ Full notes history immediately below description
     note_events = [e for e in t.events if e.note]
     if note_events:
         with st.expander("📜 Show all notes"):
@@ -258,7 +271,6 @@ def page_ticket_detail(db: Session, ticket_key: str):
     else:
         st.write("_No notes yet._")
 
-    # Update form
     with st.form("update_ticket", clear_on_submit=False):
         c1, c2, c3 = st.columns(3)
         new_status = c1.selectbox("Status", STATUS_ORDER, index=STATUS_ORDER.index(t.status), key="detail_status")
@@ -266,7 +278,7 @@ def page_ticket_detail(db: Session, ticket_key: str):
         new_assigned = c3.selectbox(
             "Assigned To",
             ASSIGNEES[1:],  # exclude "All"
-            index=ASSIGNEES[1:].index(t.assigned_to) if t.assigned_to in ASSIGNEES else 0,
+            index=ASSIGNEES[1:].index(t.assigned_to) if t.assigned_to in ASSIGNEES[1:] else 0,
             key="detail_assigned"
         )
 
@@ -287,7 +299,6 @@ def page_ticket_detail(db: Session, ticket_key: str):
             st.query_params.clear()
             st.rerun()
 
-    # ✅ Recent 3 notes shown after form
     if note_events:
         st.write("#### Recent Notes")
         recent = sorted(note_events, key=lambda ev: ev.created_at, reverse=True)[:3]
