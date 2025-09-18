@@ -1,4 +1,5 @@
 import os
+import json
 from datetime import datetime, timedelta
 from typing import List, Tuple
 
@@ -63,7 +64,9 @@ st.markdown(
 )
 
 # ---------- Users & Groups ----------
-USERS = {
+USER_FILE = "users.json"
+
+DEFAULT_USERS = {
     "Admin": {"password": "admin123", "group": "Admin"},
     "Chuck": {"password": "pass123", "group": "Support"},
     "Aidan": {"password": "pass123", "group": "Support"},
@@ -72,6 +75,18 @@ USERS = {
     "Gillian": {"password": "pass123", "group": "Billing/Sales"},
     "Megan": {"password": "pass123", "group": "Billing/Sales"},
 }
+
+def load_users():
+    if os.path.exists(USER_FILE):
+        with open(USER_FILE, "r") as f:
+            return json.load(f)
+    return DEFAULT_USERS
+
+def save_users(users):
+    with open(USER_FILE, "w") as f:
+        json.dump(users, f, indent=2)
+
+USERS = load_users()
 
 GROUP_MEMBERS = {
     "Support": ["Chuck", "Aidan", "Billy"],
@@ -170,9 +185,7 @@ def filter_by_role(query, role, user):
 
 # ---------- Pages ----------
 def page_dashboard(db: Session, current_user: str, role: str):
-    q = db.query(Ticket)
-    q = filter_by_role(q, role, current_user)
-
+    q = filter_by_role(db.query(Ticket), role, current_user)
     total = q.count()
     active = q.filter(Ticket.status.in_(STATUS_ORDER[:4])).count()
     resolved = q.filter(Ticket.status.in_(["Resolved", "Closed"])).count()
@@ -195,7 +208,7 @@ def page_new_ticket(db: Session, current_user: str):
     call_reason = st.selectbox("Call Reason", ["outage","repair","billing","upgrade","cancel","new service","other"])
     priority = st.selectbox("Priority", PRIORITY_ORDER, index=1)
     description = st.text_area("Description / Notes", height=120)
-    assigned_to = st.selectbox("Assign To", ASSIGNEES[1:])  # exclude "All"
+    assigned_to = st.selectbox("Assign To", ASSIGNEES[1:])
 
     if st.button("Create Ticket", use_container_width=True):
         created_at = datetime.utcnow()
@@ -219,9 +232,8 @@ def page_new_ticket(db: Session, current_user: str):
         st.success(f"✅ Ticket created: {t.ticket_key}")
 
 def page_manage(db: Session, current_user: str, role: str):
-    glob_q = st.text_input("Global search (Key / Customer / Phone / Desc)", "", key="manage_search")
-    q = db.query(Ticket)
-    q = filter_by_role(q, role, current_user)
+    q = filter_by_role(db.query(Ticket), role, current_user)
+    glob_q = st.text_input("Global search (Key / Customer / Phone / Desc)", "")
     if glob_q.strip():
         like = f"%{glob_q}%"
         q = q.filter(
@@ -234,8 +246,7 @@ def page_manage(db: Session, current_user: str, role: str):
     render_df_html(dataframe_with_badges(rows))
 
 def page_reports(db: Session, current_user: str, role: str):
-    q = db.query(Ticket)
-    q = filter_by_role(q, role, current_user)
+    q = filter_by_role(db.query(Ticket), role, current_user)
     rows: List[Ticket] = q.order_by(Ticket.created_at.asc()).all()
     if not rows:
         st.info("No tickets yet.")
@@ -249,15 +260,12 @@ def page_reports(db: Session, current_user: str, role: str):
 def page_ticket_detail(db: Session, ticket_key: str, current_user: str, role: str):
     t = db.query(Ticket).filter(Ticket.ticket_key == ticket_key).first()
     if not t:
-        st.error("Ticket not found.")
-        return
+        st.error("Ticket not found."); return
     if role != "Admin" and t.assigned_to not in GROUP_MEMBERS.get(role, []):
-        st.error("⛔ You do not have permission to view this ticket.")
-        return
+        st.error("⛔ You do not have permission to view this ticket."); return
 
     st.markdown(f"### 🎫 {t.ticket_key} — {t.customer_name}")
     st.write(f"**Created:** {fmt_dt(t.created_at, TZ)} | **SLA Due:** {fmt_dt(t.sla_due, TZ) if t.sla_due else '-'}")
-
     st.write("#### Ticket Description")
     st.markdown(f"> {t.description or '_No description provided._'}")
 
@@ -266,64 +274,78 @@ def page_ticket_detail(db: Session, ticket_key: str, current_user: str, role: st
         with st.expander("📜 Show all notes"):
             for e in sorted(note_events, key=lambda ev: ev.created_at, reverse=True):
                 st.markdown(f"- *{fmt_dt(e.created_at, TZ)}* **{e.actor}**: {e.note}")
-    else:
-        st.write("_No notes yet._")
 
     with st.form("update_ticket", clear_on_submit=False):
         c1, c2, c3 = st.columns(3)
         new_status = c1.selectbox("Status", STATUS_ORDER, index=STATUS_ORDER.index(t.status))
         new_priority = c2.selectbox("Priority", PRIORITY_ORDER, index=PRIORITY_ORDER.index(t.priority))
         new_assigned = c3.selectbox("Assigned To", ASSIGNEES[1:], index=ASSIGNEES[1:].index(t.assigned_to) if t.assigned_to in ASSIGNEES[1:] else 0)
-
         new_note = st.text_area("Add Note")
         submitted = st.form_submit_button("💾 Save Changes")
 
         if submitted:
-            t.status = new_status
-            t.priority = new_priority
-            t.assigned_to = new_assigned
-            db.commit()
+            t.status = new_status; t.priority = new_priority; t.assigned_to = new_assigned; db.commit()
             if new_note.strip():
-                db.add(TicketEvent(ticket_id=t.id, actor=current_user, action="note", note=new_note.strip()))
-                db.commit()
-            st.success("✅ Ticket updated successfully!")
-            st.query_params.clear()
-            st.rerun()
-
-    if note_events:
-        st.write("#### Recent Notes")
-        recent = sorted(note_events, key=lambda ev: ev.created_at, reverse=True)[:3]
-        for e in recent:
-            st.markdown(f"- *{fmt_dt(e.created_at, TZ)}* **{e.actor}**: {e.note}")
+                db.add(TicketEvent(ticket_id=t.id, actor=current_user, action="note", note=new_note.strip())); db.commit()
+            st.success("✅ Ticket updated successfully!"); st.query_params.clear(); st.rerun()
 
     if st.button("⬅ Back to Dashboard"):
-        st.query_params.clear()
-        st.rerun()
+        st.query_params.clear(); st.rerun()
+
+def page_user_management():
+    st.subheader("👤 User Management (Admin Only)")
+    users = load_users()
+
+    st.write("### Current Users")
+    st.table(pd.DataFrame([{"User": u, "Group": info["group"]} for u, info in users.items()]))
+
+    st.write("### ➕ Add User")
+    new_user = st.text_input("Username")
+    new_pass = st.text_input("Password", type="password")
+    new_group = st.selectbox("Group", ["Admin", "Support", "Billing/Sales"])
+    if st.button("Add User"):
+        if new_user in users:
+            st.error("User already exists!")
+        else:
+            users[new_user] = {"password": new_pass, "group": new_group}
+            save_users(users); st.success(f"User {new_user} added."); st.rerun()
+
+    st.write("### 🔑 Change Password")
+    sel_user = st.selectbox("Select User", list(users.keys()))
+    new_pw = st.text_input("New Password", type="password")
+    if st.button("Update Password"):
+        users[sel_user]["password"] = new_pw; save_users(users)
+        st.success(f"Password for {sel_user} updated.")
+
+    st.write("### ❌ Remove User")
+    del_user = st.selectbox("Delete User", list(users.keys()))
+    if st.button("Delete User"):
+        if del_user == "Admin":
+            st.error("Cannot delete Admin account!")
+        else:
+            users.pop(del_user, None); save_users(users)
+            st.success(f"User {del_user} deleted."); st.rerun()
 
 # ---------- App ----------
 if "user" not in st.session_state:
     login()
 else:
-    CURRENT_USER = st.session_state["user"]
-    ROLE = st.session_state["role"]
-
+    CURRENT_USER = st.session_state["user"]; ROLE = st.session_state["role"]
     st.info(f"👋 Logged in as **{CURRENT_USER}** (Group: {ROLE})")
-    if st.button("Logout"):
-        st.session_state.clear()
-        st.rerun()
+    if st.button("Logout"): st.session_state.clear(); st.rerun()
 
     params = st.query_params
     if "ticket" in params:
         ticket_key = params["ticket"]
-        with next(get_db()) as db:
-            page_ticket_detail(db, ticket_key, CURRENT_USER, ROLE)
+        with next(get_db()) as db: page_ticket_detail(db, ticket_key, CURRENT_USER, ROLE)
     else:
-        tabs = st.tabs(["📊 Dashboard", "➕ New Ticket", "🛠️ Manage", "📈 Reports"])
-        with tabs[0]:
-            with next(get_db()) as db: page_dashboard(db, CURRENT_USER, ROLE)
-        with tabs[1]:
-            with next(get_db()) as db: page_new_ticket(db, CURRENT_USER)
-        with tabs[2]:
-            with next(get_db()) as db: page_manage(db, CURRENT_USER, ROLE)
-        with tabs[3]:
-            with next(get_db()) as db: page_reports(db, CURRENT_USER, ROLE)
+        if ROLE == "Admin":
+            tabs = st.tabs(["📊 Dashboard","➕ New Ticket","🛠️ Manage","📈 Reports","👤 User Management"])
+        else:
+            tabs = st.tabs(["📊 Dashboard","➕ New Ticket","🛠️ Manage","📈 Reports"])
+
+        with tabs[0]: with next(get_db()) as db: page_dashboard(db, CURRENT_USER, ROLE)
+        with tabs[1]: with next(get_db()) as db: page_new_ticket(db, CURRENT_USER)
+        with tabs[2]: with next(get_db()) as db: page_manage(db, CURRENT_USER, ROLE)
+        with tabs[3]: with next(get_db()) as db: page_reports(db, CURRENT_USER, ROLE)
+        if ROLE == "Admin": with tabs[4]: page_user_management()
