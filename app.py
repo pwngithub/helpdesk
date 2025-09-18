@@ -230,10 +230,20 @@ def page_ticket_detail(db: Session, ticket_key: str):
     st.markdown(f"### 🎫 {t.ticket_key} — {t.customer_name}")
     st.write(f"**Created:** {fmt_dt(t.created_at, TZ)} | **SLA Due:** {fmt_dt(t.sla_due, TZ) if t.sla_due else '-'}")
 
-    # ✅ Show ticket description
+    # ✅ Ticket description
     st.write("#### Ticket Description")
     st.markdown(f"> {t.description or '_No description provided._'}")
 
+    # ✅ Full notes history immediately below description
+    note_events = [e for e in t.events if e.note]
+    if note_events:
+        with st.expander("📜 Show all notes"):
+            for e in sorted(note_events, key=lambda ev: ev.created_at, reverse=True):
+                st.markdown(f"- *{fmt_dt(e.created_at, TZ)}* **{e.actor}**: {e.note}")
+    else:
+        st.write("_No notes yet._")
+
+    # Update form
     with st.form("update_ticket"):
         c1, c2, c3 = st.columns(3)
         new_status = c1.selectbox("Status", STATUS_ORDER, index=STATUS_ORDER.index(t.status), key="detail_status")
@@ -257,20 +267,12 @@ def page_ticket_detail(db: Session, ticket_key: str):
             st.query_params.clear()
             st.rerun()
 
-    # ✅ Recent notes with expander for full history
-    st.write("#### Recent Notes")
-    note_events = [e for e in t.events if e.note]
+    # ✅ Recent 3 notes shown after form
     if note_events:
-        # Show last 3
+        st.write("#### Recent Notes")
         recent = sorted(note_events, key=lambda ev: ev.created_at, reverse=True)[:3]
         for e in recent:
             st.markdown(f"- *{fmt_dt(e.created_at, TZ)}* **{e.actor}**: {e.note}")
-
-        with st.expander("📜 Show all notes"):
-            for e in sorted(note_events, key=lambda ev: ev.created_at, reverse=True):
-                st.markdown(f"- *{fmt_dt(e.created_at, TZ)}* **{e.actor}**: {e.note}")
-    else:
-        st.write("_No notes yet._")
 
     if st.button("⬅ Back to Dashboard"):
         st.query_params.clear()
