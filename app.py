@@ -257,11 +257,18 @@ def page_ticket_detail(db: Session, ticket_key: str):
             st.query_params.clear()
             st.rerun()
 
+    # ✅ Recent notes with expander for full history
     st.write("#### Recent Notes")
     note_events = [e for e in t.events if e.note]
     if note_events:
-        for e in sorted(note_events, key=lambda ev: ev.created_at, reverse=True)[:5]:
+        # Show last 3
+        recent = sorted(note_events, key=lambda ev: ev.created_at, reverse=True)[:3]
+        for e in recent:
             st.markdown(f"- *{fmt_dt(e.created_at, TZ)}* **{e.actor}**: {e.note}")
+
+        with st.expander("📜 Show all notes"):
+            for e in sorted(note_events, key=lambda ev: ev.created_at, reverse=True):
+                st.markdown(f"- *{fmt_dt(e.created_at, TZ)}* **{e.actor}**: {e.note}")
     else:
         st.write("_No notes yet._")
 
