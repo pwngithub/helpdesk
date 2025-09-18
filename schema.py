@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime
 
@@ -16,13 +16,13 @@ class Ticket(Base):
     service_type = Column(String)
     call_source = Column(String)
     call_reason = Column(String)
-    description = Column(Text)
-    status = Column(String, default="Open")
-    priority = Column(String, default="Medium")
+    description = Column(String)
+    status = Column(String)
+    priority = Column(String)
     assigned_to = Column(String)
-    sla_due = Column(DateTime, nullable=True)
+    sla_due = Column(DateTime)
 
-    events = relationship("TicketEvent", back_populates="ticket")
+    events = relationship("TicketEvent", back_populates="ticket", cascade="all, delete")
 
 class TicketEvent(Base):
     __tablename__ = "ticket_events"
@@ -32,6 +32,6 @@ class TicketEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     actor = Column(String)
     action = Column(String)
-    note = Column(Text)
+    note = Column(String)
 
     ticket = relationship("Ticket", back_populates="events")

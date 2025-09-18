@@ -1,12 +1,17 @@
-from datetime import datetime, timedelta
-import pytz
+from datetime import datetime, timedelta, timezone
 
 def compute_sla_due(priority: str, created_at: datetime):
-    hours = {"Low": 72, "Medium": 48, "High": 24, "Critical": 8}
-    return created_at + timedelta(hours=hours.get(priority, 48))
+    if priority == "Critical":
+        return created_at + timedelta(hours=4)
+    if priority == "High":
+        return created_at + timedelta(hours=12)
+    if priority == "Medium":
+        return created_at + timedelta(days=1)
+    if priority == "Low":
+        return created_at + timedelta(days=3)
+    return None
 
-def fmt_dt(dt: datetime, tz: str = "UTC") -> str:
+def fmt_dt(dt: datetime, tz: str = "America/New_York") -> str:
     if not dt:
         return "-"
-    local = pytz.timezone(tz)
-    return dt.astimezone(local).strftime("%Y-%m-%d %H:%M")
+    return dt.replace(tzinfo=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
