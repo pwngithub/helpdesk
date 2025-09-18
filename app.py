@@ -141,30 +141,31 @@ def login():
 def badge(text: str, color: str) -> str:
     return f'<span class="badge {color}">{text}</span>'
 
- def sla_countdown(now, due):
-     if not due:
-         return "-", "gray"
-     delta = due - now
-     hours = delta.total_seconds() / 3600
-     if hours < 0:
-         return f"{abs(int(hours))}h overdue", "red"
--    if hours <= 4:
--        return f"{int(hours))}h left", "orange"
-+    if hours <= 4:
-+        return f"{int(hours)}h left", "orange"
-     days = int(hours // 24)
-     if days >= 1:
-         return f"{days}d left", "green"
-     return f"{int(hours)}h left", "green"
+
+def sla_countdown(now, due):
+    # due can be None or a datetime
+    if not due:
+        return "-", "gray"
+    delta = due - now
+    hours = delta.total_seconds() / 3600
+    if hours < 0:
+        return f"{abs(int(hours))}h overdue", "red"
+    if hours <= 4:
+        return f"{int(hours)}h left", "orange"
+    days = int(hours // 24)
+    if days >= 1:
+        return f"{days}d left", "green"
+    return f"{int(hours)}h left", "green"
 
 
-def dataframe_with_badges(rows: List[Ticket]) -> pd.DataFrame:
+def dataframe_with_badges(rows):
+    from datetime import datetime
     now = datetime.utcnow()
     data = []
     for t in rows:
         sla_txt, sla_class = sla_countdown(now, t.sla_due)
         latest_note = t.description or "-"
-        if t.events:
+        if getattr(t, "events", None):
             note_events = [e for e in t.events if e.note]
             if note_events:
                 latest_note = sorted(note_events, key=lambda e: e.created_at)[-1].note
@@ -178,22 +179,27 @@ def dataframe_with_badges(rows: List[Ticket]) -> pd.DataFrame:
                 "Status": badge(t.status, STATUS_COLOR.get(t.status, "gray")),
                 "Priority": badge(t.priority, PRIORITY_COLOR.get(t.priority, "gray")),
                 "Assigned": t.assigned_to or "-",
-                "SLA": f'<span class="{{ "overdue" if sla_class=="red" else ("almost" if sla_class=="orange" else "ok") }}">{sla_txt}</span>'.replace("{{","{").replace("}}","}"),
+                "SLA": f'<span class="{"overdue" if sla_class=="red" else ("almost" if sla_class=="orange" else "ok")}">{sla_txt}</span>',
                 "Reason": t.call_reason,
                 "Service": t.service_type,
                 "Latest Note": latest_note,
             }
         )
+    import pandas as pd
     return pd.DataFrame(data)
 
-def render_df_html(df: pd.DataFrame):
+
+def render_df_html(df):
     st.write(df.to_html(escape=False, index=False), unsafe_allow_html=True)
+
 
 def filter_by_role(query, role: str, user: str):
     if role == "Admin":
         return query
     allowed = set(GROUP_MEMBERS.get(role, []))
-    return query.filter(Ticket.assigned_to.in_(allowed)) if allowed else query.filter(Ticket.assigned_to == user)
+    if allowed:
+        return query.filter(Ticket.assigned_to.in_(allowed))
+    return query.filter(Ticket.assigned_to == user)
 
 # ---------- Google Sheets Import (robust) ----------
 def build_candidate_csv_urls(sheet_url: str) -> list[str]:
