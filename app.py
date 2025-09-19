@@ -475,6 +475,7 @@ def page_new_ticket(db: Session, current_user: str):
         st.success(f"✅ Ticket created: {t.ticket_key}")
 
 
+
                     st.rerun()
             if name:
                 from sqlalchemy import func
