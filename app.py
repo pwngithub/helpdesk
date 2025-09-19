@@ -168,19 +168,22 @@ def sla_countdown(now: datetime, due: Optional[datetime]) -> Tuple[str, str]:
         return f"{days}d left", "green"
     return f"{int(hours)}h left", "green"
 
-def dataframe_with_badges(rows: List['Ticket']) -> pd.DataFrame:
+def dataframe_with_badges(rows: List[Ticket]) -> pd.DataFrame:
     now = datetime.utcnow()
     data = []
     for t in rows:
         sla_txt, sla_class = sla_countdown(now, t.sla_due)
-        class_name = "overdue" if sla_class=="red" else ("almost" if sla_class=="orange" else "ok")
+        class_name = "overdue" if sla_class == "red" else ("almost" if sla_class == "orange" else "ok")
+
         latest_note = t.description or "-"
-        if t.events:
+        if getattr(t, "events", None):
             note_events = [e for e in t.events if e.note]
             if note_events:
                 latest_note = sorted(note_events, key=lambda e: e.created_at)[-1].note
+
         data.append({
-            "Key": t.ticket_key,
+            # 👇 clickable key that navigates to the ticket detail
+            "Key": f'<a href="?ticket={t.ticket_key}" target="_self">{t.ticket_key}</a>',
             "Created": fmt_dt(t.created_at, TZ),
             "Customer": t.customer_name,
             "Acct #": t.account_number,
@@ -194,6 +197,7 @@ def dataframe_with_badges(rows: List['Ticket']) -> pd.DataFrame:
             "Latest Note": latest_note,
         })
     return pd.DataFrame(data)
+
 
 def render_df_html(df: pd.DataFrame):
     st.write(df.to_html(escape=False, index=False), unsafe_allow_html=True)
