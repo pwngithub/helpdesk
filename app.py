@@ -405,30 +405,38 @@ def page_dashboard(db: Session, current_user: str, role: str):
 
 def page_new_ticket(db: Session, current_user: str):
     st.subheader("Create New Ticket")
-    with st.expander("Lookup existing customer", expanded=True):
-        s1, s2, s3, s4 = st.columns([1, 1, 0.5, 0.5])
-        with s1:
-            st.text_input("Account Number (search)", key="lookup_acct")
-        with s2:
-            st.text_input("Customer Name (search)", key="lookup_name")
-        with s3:
-            lookup_clicked = st.button("🔍 Lookup", key="lookup_btn")
-        with s4:
-            if st.button("Clear", key="lookup_clear_btn"):
-                for k in ["lookup_acct", "lookup_name", "lookup_matches", "lookup_pick_idx"]:
-                    st.session_state.pop(k, None)
-                st.info("Lookup cleared.")
-        if lookup_clicked:
-            acct = (st.session_state.get("lookup_acct") or "").strip()
-            name = (st.session_state.get("lookup_name") or "").strip()
-            qry = db.query(Customer)
-            if acct:
-                c = qry.filter(Customer.account_number == acct).first()
-                if c:
-                    st.session_state["new_acct"] = c.account_number or ""
-                    st.session_state["new_name"] = c.name or ""
-                    st.session_state["new_phone"] = c.phone or ""
-                    st.success(f"Loaded customer: {c.name or c.account_number}")
+   with st.expander("Lookup existing customer", expanded=True):
+    acct_search = st.text_input("Account Number", key="lookup_acct")
+    name_search = st.text_input("Customer Name", key="lookup_name")
+
+    matches = []
+    if acct_search.strip():
+        matches = db.query(Customer).filter(
+            Customer.account_number.ilike(f"%{acct_search.strip()}%")
+        ).all()
+    elif name_search.strip():
+        matches = db.query(Customer).filter(
+            Customer.name.ilike(f"%{name_search.strip()}%")
+        ).order_by(Customer.name.asc()).limit(20).all()
+
+    if matches:
+        if len(matches) == 1:
+            c = matches[0]
+            st.session_state["new_acct"] = c.account_number or ""
+            st.session_state["new_name"] = c.name or ""
+            st.session_state["new_phone"] = c.phone or ""
+            st.success(f"Loaded customer: {c.name} ({c.account_number})")
+        else:
+            labels = [f"{c.name} — {c.account_number} — {c.phone}" for c in matches]
+            sel = st.selectbox("Select a customer", labels, key="lookup_sel")
+            if sel:
+                idx = labels.index(sel)
+                c = matches[idx]
+                st.session_state["new_acct"] = c.account_number or ""
+                st.session_state["new_name"] = c.name or ""
+                st.session_state["new_phone"] = c.phone or ""
+                st.success(f"Loaded customer: {c.name} ({c.account_number})")
+
                     st.rerun()
             if name:
                 from sqlalchemy import func
