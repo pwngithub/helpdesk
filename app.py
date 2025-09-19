@@ -472,50 +472,9 @@ def page_new_ticket(db: Session, current_user: str):
         db.refresh(t)
         db.add(TicketEvent(ticket_id=t.id, actor=current_user, action="create", note="Ticket created"))
         db.commit()
-        st.success(f"✅ Ticket created: {t.ticket_key}")
+                            st.success(f"Loaded customer: {c.name} ({c.account_number})")
 
-
-if sel:
-    idx = labels.index(sel)
-    c = matches[idx]
-    st.session_state["new_acct"] = c.account_number or ""
-    st.session_state["new_name"] = c.name or ""
-    st.session_state["new_phone"] = c.phone or ""
-    st.success(f"Loaded customer: {c.name} ({c.account_number})")
-    # ❌ NO st.rerun() here
-
-                
-            if name:
-                from sqlalchemy import func
-                found = (qry.filter(func.lower(Customer.name).ilike(f"%{name.lower()}%"))
-                           .order_by(Customer.name.asc()).limit(50).all())
-                if len(found) == 0:
-                    st.warning("No matching customer found. Refine the name.")
-                elif len(found) == 1:
-                    c = found[0]
-                    st.session_state["new_acct"] = c.account_number or ""
-                    st.session_state["new_name"] = c.name or ""
-                    st.session_state["new_phone"] = c.phone or ""
-                    st.success(f"Loaded customer: {c.name or c.account_number}")
-                    st.rerun()
-                else:
-                    st.session_state["lookup_matches"] = [
-                        {"id": c.id, "account_number": c.account_number or "", "name": c.name or "", "phone": c.phone or ""}
-                        for c in found
-                    ]
-                    st.info(f"Found {len(found)} matches. Pick one below.")
-        matches = st.session_state.get("lookup_matches", [])
-        if isinstance(matches, list) and len(matches) > 1:
-            labels = [f'{m["name"]} — {m["account_number"]} — {m["phone"]}' for m in matches]
-            idx = st.selectbox("Select customer", options=list(range(len(matches))), format_func=lambda i: labels[i], key="lookup_pick_idx")
-            if st.button("Use selected", key="use_selected_btn"):
-                m = matches[idx]
-                st.session_state["new_acct"] = m["account_number"]
-                st.session_state["new_name"] = m["name"]
-                st.session_state["new_phone"] = m["phone"]
-                st.session_state.pop("lookup_matches", None)
-                st.success(f'Loaded customer: {m["name"]} ({m["account_number"]})')
-                st.rerun()
+    # ---------------- New Ticket form fields ----------------
     customer_name = st.text_input("Customer Name", key="new_name")
     account_number = st.text_input("Account Number", key="new_acct")
     phone = st.text_input("Phone", key="new_phone")
@@ -525,6 +484,7 @@ if sel:
     priority = st.selectbox("Priority", PRIORITY_ORDER, index=1)
     description = st.text_area("Description / Notes", height=120)
     assigned_to = st.selectbox("Assign To", [a for a in ASSIGNEES[1:]])
+
     if st.button("Create Ticket", use_container_width=True, key="create_ticket_btn"):
         created_at = datetime.utcnow()
         t = Ticket(
@@ -542,148 +502,13 @@ if sel:
             assigned_to=assigned_to,
             sla_due=compute_sla_due(priority, created_at),
         )
-        db.add(t); db.commit(); db.refresh(t)
-        db.add(TicketEvent(ticket_id=t.id, actor=current_user, action="create", note="Ticket created")); db.commit()
+        db.add(t)
+        db.commit()
+        db.refresh(t)
+        db.add(TicketEvent(ticket_id=t.id, actor=current_user, action="create", note="Ticket created"))
+        db.commit()
         st.success(f"✅ Ticket created: {t.ticket_key}")
 
-def page_manage(db: Session, current_user: str, role: str):
-    st.subheader("Manage Tickets")
-    q = filter_by_role(db.query(Ticket), role, current_user)
-    glob_q = st.text_input("Global search (Key / Customer / Phone / Desc)", "", key="manage_search")
-    if glob_q.strip():
-        like = f"%{glob_q}%"
-        q = q.filter((Ticket.ticket_key.ilike(like)) | (Ticket.customer_name.ilike(like)) | (Ticket.phone.ilike(like)) | (Ticket.description.ilike(like)))
-    statuses = st.multiselect("Status", STATUS_ORDER, default=[], key="manage_status")
-    if statuses: q = q.filter(Ticket.status.in_(statuses))
-    rows = q.order_by(Ticket.created_at.desc()).limit(300).all()
-    render_df_html(dataframe_with_badges(rows))
-    open_ticket_picker(rows, "manage")
-
-def page_reports(db: Session, current_user: str, role: str):
-    st.subheader("Reports & Analytics")
-    q = filter_by_role(db.query(Ticket), role, current_user)
-    rows: List['Ticket'] = q.order_by(Ticket.created_at.asc()).all()
-    if not rows:
-        st.info("No tickets yet."); return
-    df = pd.DataFrame([{"created_at": t.created_at, "status": t.status} for t in rows])
-    df["created_date"] = df["created_at"].dt.date
-    last_30 = pd.date_range(datetime.utcnow().date() - timedelta(days=29), periods=30)
-    by_day = df.groupby("created_date").size().reindex(last_30.date, fill_value=0)
-    st.line_chart(by_day)
-
-def page_ticket_detail(db: Session, ticket_key: str, current_user: str, role: str):
-    t = db.query(Ticket).filter(Ticket.ticket_key == ticket_key).first()
-    if not t:
-        st.error("Ticket not found."); return
-    if role != "Admin" and t.assigned_to not in GROUP_MEMBERS.get(role, []):
-        st.error("⛔ You do not have permission to view this ticket."); return
-    st.markdown(f"### 🎫 {t.ticket_key} — {t.customer_name}")
-    st.write(f"**Created:** {fmt_dt(t.created_at, TZ)} | **SLA Due:** {fmt_dt(t.sla_due, TZ) if t.sla_due else '-'}")
-    st.write("#### Ticket Description")
-    st.markdown(f"> {t.description or '_No description provided._'}")
-    note_events = [e for e in t.events if e.note]
-    if note_events:
-        with st.expander("📜 Show all notes"):
-            for e in sorted(note_events, key=lambda ev: ev.created_at, reverse=True):
-                st.markdown(f"- *{fmt_dt(e.created_at, TZ)}* **{e.actor}**: {e.note}")
-    else:
-        st.write("_No notes yet._")
-    with st.form("update_ticket", clear_on_submit=False):
-        c1, c2, c3 = st.columns(3)
-        new_status = c1.selectbox("Status", STATUS_ORDER, index=STATUS_ORDER.index(t.status), key="detail_status")
-        new_priority = c2.selectbox("Priority", PRIORITY_ORDER, index=PRIORITY_ORDER.index(t.priority), key="detail_priority")
-        assignees_only_people = [a for a in ASSIGNEES[1:] if a not in ("Billing","Support","Sales","All")]
-        default_idx = assignees_only_people.index(t.assigned_to) if t.assigned_to in assignees_only_people else 0
-        new_assigned = c3.selectbox("Assigned To", assignees_only_people, index=default_idx, key="detail_assigned")
-        new_note = st.text_area("Add Note", key="detail_note")
-        submitted = st.form_submit_button("💾 Save Changes")
-        if submitted:
-            t.status = new_status
-            t.priority = new_priority
-            t.assigned_to = new_assigned
-            db.commit()
-            if new_note.strip():
-                db.add(TicketEvent(ticket_id=t.id, actor=current_user, action="note", note=new_note.strip())); db.commit()
-            st.success("✅ Ticket updated successfully!")
-            set_qp(None)
-            st.rerun()
-    if note_events:
-        st.write("#### Recent Notes")
-        recent = sorted(note_events, key=lambda ev: ev.created_at, reverse=True)[:3]
-        for e in recent:
-            st.markdown(f"- *{fmt_dt(e.created_at, TZ)}* **{e.actor}**: {e.note}")
-    if st.button("⬅ Back to Dashboard"):
-        set_qp(None)
-        st.rerun()
-
-def page_user_management():
-    st.subheader("👤 User Management (Admin Only)")
-    users = load_users()
-    st.table(pd.DataFrame([{"User": u, "Group": info["group"]} for u, info in users.items()]))
-    st.write("### ➕ Add User")
-    new_user = st.text_input("Username", key="um_new_user")
-    new_pass = st.text_input("Password", type="password", key="um_new_pass")
-    new_group = st.selectbox("Group", ["Admin", "Support", "Billing/Sales"], key="um_new_group")
-    if st.button("Add User", key="um_add_btn"):
-        if not new_user.strip():
-            st.error("Username is required.")
-        elif new_user in users:
-            st.error("User already exists!")
-        else:
-            users[new_user] = {"password": new_pass or "pass123", "group": new_group}
-            save_users(users)
-            st.success(f"User {new_user} added.")
-            st.rerun()
-    st.write("### 🔑 Change Password")
-    if users:
-        sel_user = st.selectbox("Select User", list(users.keys()), key="um_sel_user")
-        new_pw = st.text_input("New Password", type="password", key="um_new_pw")
-        if st.button("Update Password", key="um_upd_pw"):
-            users[sel_user]["password"] = new_pw or users[sel_user]["password"]
-            save_users(users)
-            st.success(f"Password for {sel_user} updated.")
-    st.write("### ❌ Remove User")
-    if users:
-        del_user = st.selectbox("Delete User", list(users.keys()), key="um_del_user")
-        if st.button("Delete User", key="um_del_btn"):
-            if del_user == "Admin":
-                st.error("Cannot delete Admin account!")
-            else:
-                users.pop(del_user, None)
-                save_users(users)
-                st.success(f"User {del_user} deleted.")
-                st.rerun()
-
-def page_customers_admin(default_url: str = ""):
-    st.subheader("👥 Customers (Admin Only)")
-    st.caption("Import/Sync customers from Google Sheets and browse them here.")
-    st.info("Tips: Copy a URL with **gid=...** for the tab you want, or publish to CSV. You can also upload a CSV.")
-    sheet_url = st.text_input("Google Sheet URL (viewable or published CSV link)", value=default_url or "", key="cust_sheet_url")
-    c1, c2 = st.columns(2)
-    with c1: preview = st.button("🔎 Preview", key="cust_preview")
-    with c2: do_import = st.button("⬇️ Import / Upsert", key="cust_import")
-    uploaded = st.file_uploader("…or upload a CSV file", type=["csv"], key="cust_file")
-    df_norm = None
-    if uploaded is not None:
-        try:
-            df_raw = pd.read_csv(uploaded)
-            df_norm = normalize_customer_df(df_raw)
-            st.success("CSV uploaded.")
-        except Exception as e:
-            st.error(f"Failed to parse uploaded CSV: {e}")
-    if sheet_url and (preview or do_import) and df_norm is None:
-        try:
-            df_raw = fetch_customers_from_sheet(sheet_url)
-            df_norm = normalize_customer_df(df_raw)
-        except Exception as e:
-            st.error(f"Failed to read sheet: {e}")
-    if df_norm is not None:
-        st.write("**Preview (first 20 rows after normalization):**")
-        st.dataframe(df_norm.head(20))
-        if do_import:
-            with next(get_db()) as db:
-                ins, upd = upsert_customers(db, df_norm)
-            st.success(f"✅ Import complete: {ins} inserted, {upd} updated")
 
 # ---------------- App ----------------
 # Force-login flag prevents cookie restore until a new login succeeds.
@@ -702,6 +527,7 @@ else:
     USERS = load_users()
     GROUP_MEMBERS = load_groups(USERS)
     st.info(f"👋 Logged in as **{CURRENT_USER}** (Group: {ROLE})")
+
     colA, colB = st.columns([0.85, 0.15])
     with colB:
         if st.button("Logout", key="logout_btn"):
@@ -724,14 +550,27 @@ else:
             tabs = st.tabs(["📊 Dashboard","➕ New Ticket","🛠️ Manage","📈 Reports","👤 User Management","👥 Customers"])
         else:
             tabs = st.tabs(["📊 Dashboard","➕ New Ticket","🛠️ Manage","📈 Reports"])
+
         with tabs[0]:
-            with next(get_db()) as db: page_dashboard(db, CURRENT_USER, ROLE)
+            with next(get_db()) as db:
+                page_dashboard(db, CURRENT_USER, ROLE)
+
         with tabs[1]:
-            with next(get_db()) as db: page_new_ticket(db, CURRENT_USER)
+            with next(get_db()) as db:
+                page_new_ticket(db, CURRENT_USER)
+
         with tabs[2]:
-            with next(get_db()) as db: page_manage(db, CURRENT_USER, ROLE)
+            with next(get_db()) as db:
+                page_manage(db, CURRENT_USER, ROLE)
+
         with tabs[3]:
-            with next(get_db()) as db: page_reports(db, CURRENT_USER, ROLE)
+            with next(get_db()) as db:
+                page_reports(db, CURRENT_USER, ROLE)
+
         if ROLE == "Admin":
-            with tabs[4]: page_user_management()
-            with tabs[5]: page_customers_admin("https://docs.google.com/spreadsheets/d/1ywqLJIzydhifdUjX9Zo03B536LEUhH483hRAazT3zV8/edit?usp=sharing")
+            with tabs[4]:
+                page_user_management()
+            with tabs[5]:
+                page_customers_admin(
+                    "https://docs.google.com/spreadsheets/d/1ywqLJIzydhifdUjX9Zo03B536LEUhH483hRAazT3zV8/edit?usp=sharing"
+                )
