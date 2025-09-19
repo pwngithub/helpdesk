@@ -476,7 +476,7 @@ def page_new_ticket(db: Session, current_user: str):
 
 
 
-                    st.rerun()
+                
             if name:
                 from sqlalchemy import func
                 found = (qry.filter(func.lower(Customer.name).ilike(f"%{name.lower()}%"))
