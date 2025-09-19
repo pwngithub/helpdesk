@@ -2,3 +2,4 @@ streamlit
 sqlalchemy
 pandas
 python-dotenv
+extra-streamlit-components

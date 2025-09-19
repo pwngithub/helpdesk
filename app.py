@@ -2,14 +2,17 @@
 import os
 import re
 import io
+import hmac
+import base64
+import hashlib
 import json
 import urllib.request
-import urllib.error
 from datetime import datetime, timedelta
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 
 import pandas as pd
 import streamlit as st
+import extra_streamlit_components as stx
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
@@ -21,7 +24,6 @@ from utils import compute_sla_due, fmt_dt
 load_dotenv()
 TZ = os.getenv("TZ", "America/New_York")
 Base.metadata.create_all(bind=engine)
-
 st.set_page_config(page_title="Pioneer Ticketing", page_icon="🎫", layout="wide")
 
 # ---------- Branding / Styles ----------
@@ -29,7 +31,6 @@ PIONEER_LOGO = (
     "https://images.squarespace-cdn.com/content/v1/651eb4433b13e72c1034f375/"
     "369c5df0-5363-4827-b041-1add0367f447/PBB+long+logo.png?format=1500w"
 )
-
 CUSTOM_CSS = """
 <style>
 section.main { background: #F5F5F5 !important; }
@@ -57,7 +58,6 @@ td { white-space: normal !important; word-wrap: break-word !important; max-width
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-
 st.markdown(
     f"""
     <div class="pioneer-header">
@@ -70,7 +70,6 @@ st.markdown(
 
 # ---------- Users & Groups (json-backed) ----------
 USER_FILE = "users.json"
-
 DEFAULT_USERS: Dict[str, Dict[str, str]] = {
     "Admin": {"password": "admin123", "group": "Admin"},
     "Chuck": {"password": "pass123", "group": "Support"},
@@ -80,20 +79,68 @@ DEFAULT_USERS: Dict[str, Dict[str, str]] = {
     "Gillian": {"password": "pass123", "group": "Billing/Sales"},
     "Megan": {"password": "pass123", "group": "Billing/Sales"},
 }
-
 def load_users() -> Dict[str, Dict[str, str]]:
     if os.path.exists(USER_FILE):
         with open(USER_FILE, "r") as f:
             return json.load(f)
     return DEFAULT_USERS
-
 def save_users(users: Dict[str, Dict[str, str]]) -> None:
     with open(USER_FILE, "w") as f:
         json.dump(users, f, indent=2)
 
-USERS = load_users()
+# ---------- Auth token (cookie) ----------
+cookie_manager = stx.CookieManager()
 
-def compute_group_members(users: Dict[str, Dict[str, str]]) -> Dict[str, List[str]]:
+def _secret_key() -> bytes:
+    try:
+        sk = st.secrets["auth_secret"]
+    except Exception:
+        sk = os.getenv("AUTH_SECRET", "dev-insecure-secret-change-me")
+    return sk.encode("utf-8")
+
+def _sign_token(user: str, role: str, exp_ts: int) -> str:
+    msg = f"{user}|{role}|{exp_ts}"
+    sig = hmac.new(_secret_key(), msg.encode(), hashlib.sha256).hexdigest()
+    b64 = base64.urlsafe_b64encode(msg.encode()).decode()
+    return f"{b64}.{sig}"
+
+def _verify_token(token: str) -> Optional[Tuple[str, str]]:
+    try:
+        b64, sig = token.split(".", 1)
+        msg = base64.urlsafe_b64decode(b64.encode()).decode()
+        expected = hmac.new(_secret_key(), msg.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+        user, role, exp_ts = msg.split("|")
+        if int(exp_ts) < int(datetime.utcnow().timestamp()):
+            return None
+        return user, role
+    except Exception:
+        return None
+
+def _write_auth_cookie(user: str, role: str, days: int = 7):
+    exp = datetime.utcnow() + timedelta(days=days)
+    token = _sign_token(user, role, int(exp.timestamp()))
+    cookie_manager.set("pioneer_auth", token, expires_at=exp, key="auth_set_cookie")
+
+def _clear_auth_cookie():
+    past = datetime.utcnow() - timedelta(days=1)
+    cookie_manager.set("pioneer_auth", "", expires_at=past, key="auth_clear_cookie")
+
+def _read_auth_cookie() -> Optional[Tuple[str, str]]:
+    token = cookie_manager.get("pioneer_auth")
+    if not token:
+        return None
+    return _verify_token(token)
+
+# ---------- Taxonomies ----------
+STATUS_ORDER = ["Open", "In Progress", "Escalated", "On Hold", "Resolved", "Closed"]
+PRIORITY_ORDER = ["Low", "Medium", "High", "Critical"]
+STATUS_COLOR = {"Open":"blue","In Progress":"purple","Escalated":"red","On Hold":"orange","Resolved":"green","Closed":"gray"}
+PRIORITY_COLOR = {"Low":"gray","Medium":"blue","High":"orange","Critical":"red"}
+ASSIGNEES = ["All", "Billing", "Support", "Sales", "BJ", "Megan", "Billy", "Gillian", "Gabby", "Chuck", "Aidan"]
+
+def load_groups(users: Dict[str, Dict[str, str]]) -> Dict[str, List[str]]:
     groups: Dict[str, List[str]] = {}
     for name, info in users.items():
         grp = info.get("group", "Support")
@@ -101,53 +148,17 @@ def compute_group_members(users: Dict[str, Dict[str, str]]) -> Dict[str, List[st
     groups["Admin"] = list(users.keys())
     return groups
 
-GROUP_MEMBERS = compute_group_members(USERS)
-
-ASSIGNEES = [
-    "All", "Billing", "Support", "Sales", "BJ", "Megan",
-    "Billy", "Gillian", "Gabby", "Chuck", "Aidan"
-]
-
-# ---------- Taxonomies ----------
-STATUS_ORDER = ["Open", "In Progress", "Escalated", "On Hold", "Resolved", "Closed"]
-PRIORITY_ORDER = ["Low", "Medium", "High", "Critical"]
-
-STATUS_COLOR = {
-    "Open": "blue",
-    "In Progress": "purple",
-    "Escalated": "red",
-    "On Hold": "orange",
-    "Resolved": "green",
-    "Closed": "gray",
-}
-PRIORITY_COLOR = {"Low": "gray", "Medium": "blue", "High": "orange", "Critical": "red"}
-
-# ---------- Login ----------
-def login():
-    st.title("🔐 Pioneer Ticketing Login")
-    users = load_users()
-    user = st.selectbox("Employee", list(users.keys()))
-    pw = st.text_input("Password", type="password")
-    if st.button("Login"):
-        if user in users and pw == users[user]["password"]:
-            st.session_state["user"] = user
-            st.session_state["role"] = users[user]["group"]
-            st.success(f"Welcome {user} ({users[user]['group']})")
-            st.rerun()
-        else:
-            st.error("Invalid login")
+USERS = load_users()
+GROUP_MEMBERS = load_groups(USERS)
 
 # ---------- Helpers ----------
 def badge(text: str, color: str) -> str:
     return f'<span class="badge {color}">{text}</span>'
 
-
-def sla_countdown(now, due):
-    # due can be None or a datetime
+def sla_countdown(now: datetime, due: Optional[datetime]) -> Tuple[str, str]:
     if not due:
         return "-", "gray"
-    delta = due - now
-    hours = delta.total_seconds() / 3600
+    hours = (due - now).total_seconds() / 3600
     if hours < 0:
         return f"{abs(int(hours))}h overdue", "red"
     if hours <= 4:
@@ -157,54 +168,68 @@ def sla_countdown(now, due):
         return f"{days}d left", "green"
     return f"{int(hours)}h left", "green"
 
-
-def dataframe_with_badges(rows):
-    from datetime import datetime
+def dataframe_with_badges(rows: List['Ticket']) -> pd.DataFrame:
     now = datetime.utcnow()
     data = []
     for t in rows:
         sla_txt, sla_class = sla_countdown(now, t.sla_due)
+        class_name = "overdue" if sla_class=="red" else ("almost" if sla_class=="orange" else "ok")
         latest_note = t.description or "-"
-        if getattr(t, "events", None):
+        if t.events:
             note_events = [e for e in t.events if e.note]
             if note_events:
                 latest_note = sorted(note_events, key=lambda e: e.created_at)[-1].note
-        data.append(
-            {
-                "Key": f'<a href="?ticket={t.ticket_key}">{t.ticket_key}</a>',
-                "Created": fmt_dt(t.created_at, TZ),
-                "Customer": t.customer_name,
-                "Acct #": t.account_number,
-                "Phone": t.phone,
-                "Status": badge(t.status, STATUS_COLOR.get(t.status, "gray")),
-                "Priority": badge(t.priority, PRIORITY_COLOR.get(t.priority, "gray")),
-                "Assigned": t.assigned_to or "-",
-                "SLA": f'<span class="{"overdue" if sla_class=="red" else ("almost" if sla_class=="orange" else "ok")}">{sla_txt}</span>',
-                "Reason": t.call_reason,
-                "Service": t.service_type,
-                "Latest Note": latest_note,
-            }
-        )
-    import pandas as pd
+        data.append({
+            "Key": t.ticket_key,
+            "Created": fmt_dt(t.created_at, TZ),
+            "Customer": t.customer_name,
+            "Acct #": t.account_number,
+            "Phone": t.phone,
+            "Status": badge(t.status, STATUS_COLOR.get(t.status, "gray")),
+            "Priority": badge(t.priority, PRIORITY_COLOR.get(t.priority, "gray")),
+            "Assigned": t.assigned_to or "-",
+            "SLA": f'<span class="{class_name}">{sla_txt}</span>',
+            "Reason": t.call_reason,
+            "Service": t.service_type,
+            "Latest Note": latest_note,
+        })
     return pd.DataFrame(data)
 
-
-def render_df_html(df):
+def render_df_html(df: pd.DataFrame):
     st.write(df.to_html(escape=False, index=False), unsafe_allow_html=True)
-
 
 def filter_by_role(query, role: str, user: str):
     if role == "Admin":
         return query
     allowed = set(GROUP_MEMBERS.get(role, []))
-    if allowed:
-        return query.filter(Ticket.assigned_to.in_(allowed))
-    return query.filter(Ticket.assigned_to == user)
+    return query.filter(Ticket.assigned_to.in_(allowed)) if allowed else query.filter(Ticket.assigned_to == user)
+
+def set_qp(key: Optional[str], value: Optional[str] = None):
+    try:
+        if key is None:
+            st.query_params.clear()
+        else:
+            st.query_params[key] = value
+    except Exception:
+    # Fallback for older Streamlit
+        if key is None:
+            st.experimental_set_query_params()
+        else:
+            st.experimental_set_query_params(**{key: value})
+
+def open_ticket_picker(rows: List['Ticket'], key_prefix: str):
+    options = [f"{t.ticket_key} — {t.customer_name} — {t.phone or ''}" for t in rows]
+    if not options:
+        return
+    sel = st.selectbox("Open a ticket…", [""] + options, index=0, key=f"{key_prefix}_open_select")
+    if sel:
+        ticket_key = sel.split(" — ")[0]
+        set_qp("ticket", ticket_key)
+        st.rerun()
 
 # ---------- Google Sheets Import (robust) ----------
 def build_candidate_csv_urls(sheet_url: str) -> list[str]:
     urls = []
-    # Already a published-to-web URL?
     if "/spreadsheets/d/e/" in sheet_url and "pub" in sheet_url:
         if "output=csv" in sheet_url:
             urls.append(sheet_url)
@@ -215,8 +240,6 @@ def build_candidate_csv_urls(sheet_url: str) -> list[str]:
                 sep = "&" if "?" in sheet_url else "?"
                 urls.append(f"{sheet_url}{sep}output=csv")
         return urls
-
-    # Standard edit URL
     m = re.search(r'/spreadsheets/d/([a-zA-Z0-9-_]+)', sheet_url)
     if not m:
         return urls
@@ -232,8 +255,7 @@ def build_candidate_csv_urls(sheet_url: str) -> list[str]:
 def read_csv_from_url(url: str, timeout: int = 20) -> pd.DataFrame:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = resp.read()
-    text = data.decode("utf-8", errors="ignore")
+        text = resp.read().decode("utf-8", errors="ignore")
     return pd.read_csv(io.StringIO(text))
 
 def fetch_customers_from_sheet(sheet_url: str) -> pd.DataFrame:
@@ -246,16 +268,15 @@ def fetch_customers_from_sheet(sheet_url: str) -> pd.DataFrame:
             last_err = e
     raise ValueError(
         "Could not download CSV from Google Sheets. "
-        "Tips: (1) In Sheets, click the correct tab then copy the URL so it contains `gid=`. "
-        "(2) Ensure Share is set to 'Anyone with the link – Viewer'. "
-        "(3) Or use File → Share → Publish to the web → CSV and paste that link. "
+        "Tips: (1) Click the correct sheet tab so the URL has `gid=`. "
+        "(2) Share: Anyone with the link (Viewer). "
+        "(3) Or Publish to the web → CSV and use that link. "
         f"Last error: {last_err}"
     )
 
 def normalize_customer_df(df: pd.DataFrame) -> pd.DataFrame:
     cols = {c: str(c).strip().lower() for c in df.columns}
     df = df.rename(columns=cols)
-
     rename_map = {}
     for c in df.columns:
         if c in ["customer", "customer name", "name", "full name"]:
@@ -272,16 +293,13 @@ def normalize_customer_df(df: pd.DataFrame) -> pd.DataFrame:
             rename_map[c] = "service_type"
         elif c in ["notes", "note", "comments"]:
             rename_map[c] = "notes"
-
     df = df.rename(columns=rename_map)
-
     keep = ["account_number","name","phone","email","address","service_type","notes"]
     for k in keep:
         if k not in df.columns:
             df[k] = ""
     df["account_number"] = df["account_number"].astype(str).str.strip()
     df["name"] = df["name"].astype(str).str.strip()
-
     return df[keep]
 
 def upsert_customers(db: Session, df: pd.DataFrame) -> tuple[int, int]:
@@ -313,46 +331,50 @@ def upsert_customers(db: Session, df: pd.DataFrame) -> tuple[int, int]:
     return inserted, updated
 
 # ---------- Pages ----------
+def login():
+    st.title("🔐 Pioneer Ticketing Login")
+    users = load_users()
+    user = st.selectbox("Employee", list(users.keys()), key="login_user")
+    pw = st.text_input("Password", type="password", key="login_pw")
+    if st.button("Login", key="login_btn"):
+        if user in users and pw == users[user]["password"]:
+            st.session_state["user"] = user
+            st.session_state["role"] = users[user]["group"]
+            _write_auth_cookie(user, users[user]["group"])
+            st.success(f"Welcome {user} ({users[user]['group']})")
+            st.rerun()
+        else:
+            st.error("Invalid login")
+
 def page_dashboard(db: Session, current_user: str, role: str):
     q = filter_by_role(db.query(Ticket), role, current_user)
     total = q.count()
     active = q.filter(Ticket.status.in_(STATUS_ORDER[:4])).count()
     resolved = q.filter(Ticket.status.in_(["Resolved", "Closed"])).count()
-
     c1, c2, c3 = st.columns(3)
     c1.metric("Total Tickets", total)
     c2.metric("Active Tickets", active)
     c3.metric("Resolved/Closed", resolved)
-
     with st.expander("Filters", expanded=True):
         f1, f2, f3, f4 = st.columns(4)
-        statuses = f1.multiselect("Status", STATUS_ORDER,
-                                  default=["Open","In Progress","Escalated","On Hold"],
-                                  key="dash_status")
+        statuses = f1.multiselect("Status", STATUS_ORDER, default=["Open","In Progress","Escalated","On Hold"], key="dash_status")
         priorities = f2.multiselect("Priority", PRIORITY_ORDER, key="dash_priority")
         assignees = sorted({t.assigned_to for t in q if t.assigned_to})
         assignee_filter = f3.selectbox("Assigned To", ["All"] + assignees, key="dash_assignee")
         search = f4.text_input("Search (Key / Customer / Phone)", "", key="dash_search")
-
     if statuses: q = q.filter(Ticket.status.in_(statuses))
     if priorities: q = q.filter(Ticket.priority.in_(priorities))
     if assignee_filter and assignee_filter != "All":
         q = q.filter(Ticket.assigned_to == assignee_filter)
     if search:
         like = f"%{search}%"
-        q = q.filter(
-            (Ticket.ticket_key.ilike(like)) |
-            (Ticket.customer_name.ilike(like)) |
-            (Ticket.phone.ilike(like))
-        )
-
+        q = q.filter((Ticket.ticket_key.ilike(like)) | (Ticket.customer_name.ilike(like)) | (Ticket.phone.ilike(like)))
     rows = q.order_by(Ticket.created_at.desc()).all()
     render_df_html(dataframe_with_badges(rows))
+    open_ticket_picker(rows, "dash")
 
 def page_new_ticket(db: Session, current_user: str):
     st.subheader("Create New Ticket")
-
-    # --- Lookup panel (separate from the actual form) ---
     with st.expander("Lookup existing customer", expanded=True):
         s1, s2, s3, s4 = st.columns([1, 1, 0.5, 0.5])
         with s1:
@@ -366,15 +388,10 @@ def page_new_ticket(db: Session, current_user: str):
                 for k in ["lookup_acct", "lookup_name", "lookup_matches", "lookup_pick_idx"]:
                     st.session_state.pop(k, None)
                 st.info("Lookup cleared.")
-
         if lookup_clicked:
             acct = (st.session_state.get("lookup_acct") or "").strip()
             name = (st.session_state.get("lookup_name") or "").strip()
-
-            matches = []
             qry = db.query(Customer)
-
-            # Prefer exact account match if provided
             if acct:
                 c = qry.filter(Customer.account_number == acct).first()
                 if c:
@@ -383,16 +400,12 @@ def page_new_ticket(db: Session, current_user: str):
                     st.session_state["new_phone"] = c.phone or ""
                     st.success(f"Loaded customer: {c.name or c.account_number}")
                     st.rerun()
-
-            # Otherwise search by name (contains, case-insensitive)
             if name:
                 from sqlalchemy import func
                 found = (qry.filter(func.lower(Customer.name).ilike(f"%{name.lower()}%"))
-                            .order_by(Customer.name.asc())
-                            .limit(50)
-                            .all())
+                           .order_by(Customer.name.asc()).limit(50).all())
                 if len(found) == 0:
-                    st.warning("No matching customer found. Try refining the name.")
+                    st.warning("No matching customer found. Refine the name.")
                 elif len(found) == 1:
                     c = found[0]
                     st.session_state["new_acct"] = c.account_number or ""
@@ -401,55 +414,33 @@ def page_new_ticket(db: Session, current_user: str):
                     st.success(f"Loaded customer: {c.name or c.account_number}")
                     st.rerun()
                 else:
-                    # Store lightweight match info in session so we can render a picker
                     st.session_state["lookup_matches"] = [
-                        {
-                            "id": c.id,
-                            "account_number": c.account_number or "",
-                            "name": c.name or "",
-                            "phone": c.phone or "",
-                            "email": c.email or "",
-                            "service_type": c.service_type or "",
-                        }
+                        {"id": c.id, "account_number": c.account_number or "", "name": c.name or "", "phone": c.phone or ""}
                         for c in found
                     ]
                     st.info(f"Found {len(found)} matches. Pick one below.")
-
-        # If we have multiple matches, show a selector
         matches = st.session_state.get("lookup_matches", [])
         if isinstance(matches, list) and len(matches) > 1:
-            labels = [
-                f'{m["name"]}  —  {m["account_number"]}  —  {m["phone"]}'
-                for m in matches
-            ]
-            idx = st.selectbox(
-                "Select customer",
-                options=list(range(len(matches))),
-                format_func=lambda i: labels[i],
-                key="lookup_pick_idx",
-            )
+            labels = [f'{m["name"]} — {m["account_number"]} — {m["phone"]}' for m in matches]
+            idx = st.selectbox("Select customer", options=list(range(len(matches))), format_func=lambda i: labels[i], key="lookup_pick_idx")
             if st.button("Use selected", key="use_selected_btn"):
                 m = matches[idx]
                 st.session_state["new_acct"] = m["account_number"]
                 st.session_state["new_name"] = m["name"]
                 st.session_state["new_phone"] = m["phone"]
-                # Clear matches to hide the picker next run
                 st.session_state.pop("lookup_matches", None)
                 st.success(f'Loaded customer: {m["name"]} ({m["account_number"]})')
                 st.rerun()
 
-    # --- Main form (reads values set by lookup) ---
     customer_name = st.text_input("Customer Name", key="new_name")
     account_number = st.text_input("Account Number", key="new_acct")
     phone = st.text_input("Phone", key="new_phone")
-
-    service_type = st.selectbox("Service Type", ["Fiber", "DSL", "Fixed Wireless", "TV", "Voice", "Other"])
-    call_source = st.selectbox("Call Source", ["phone", "email", "chat", "walk-in"])
-    call_reason = st.selectbox("Call Reason", ["outage", "repair", "billing", "upgrade", "cancel", "new service", "other"])
-    priority = st.selectbox("Priority", ["Low", "Medium", "High", "Critical"], index=1)
+    service_type = st.selectbox("Service Type", ["Fiber","DSL","Fixed Wireless","TV","Voice","Other"])
+    call_source = st.selectbox("Call Source", ["phone","email","chat","walk-in"])
+    call_reason = st.selectbox("Call Reason", ["outage","repair","billing","upgrade","cancel","new service","other"])
+    priority = st.selectbox("Priority", PRIORITY_ORDER, index=1)
     description = st.text_area("Description / Notes", height=120)
-    assigned_to = st.selectbox("Assign To", ["Billing", "Support", "Sales", "BJ", "Megan", "Billy", "Gillian", "Gabby", "Chuck", "Aidan"])
-
+    assigned_to = st.selectbox("Assign To", [a for a in ASSIGNEES[1:]])
     if st.button("Create Ticket", use_container_width=True, key="create_ticket_btn"):
         created_at = datetime.utcnow()
         t = Ticket(
@@ -468,8 +459,7 @@ def page_new_ticket(db: Session, current_user: str):
             sla_due=compute_sla_due(priority, created_at),
         )
         db.add(t); db.commit(); db.refresh(t)
-        db.add(TicketEvent(ticket_id=t.id, actor=current_user, action="create", note="Ticket created"))
-        db.commit()
+        db.add(TicketEvent(ticket_id=t.id, actor=current_user, action="create", note="Ticket created")); db.commit()
         st.success(f"✅ Ticket created: {t.ticket_key}")
 
 def page_manage(db: Session, current_user: str, role: str):
@@ -478,22 +468,17 @@ def page_manage(db: Session, current_user: str, role: str):
     glob_q = st.text_input("Global search (Key / Customer / Phone / Desc)", "", key="manage_search")
     if glob_q.strip():
         like = f"%{glob_q}%"
-        q = q.filter(
-            (Ticket.ticket_key.ilike(like))
-            | (Ticket.customer_name.ilike(like))
-            | (Ticket.phone.ilike(like))
-            | (Ticket.description.ilike(like))
-        )
+        q = q.filter((Ticket.ticket_key.ilike(like)) | (Ticket.customer_name.ilike(like)) | (Ticket.phone.ilike(like)) | (Ticket.description.ilike(like)))
     statuses = st.multiselect("Status", STATUS_ORDER, default=[], key="manage_status")
-    if statuses:
-        q = q.filter(Ticket.status.in_(statuses))
+    if statuses: q = q.filter(Ticket.status.in_(statuses))
     rows = q.order_by(Ticket.created_at.desc()).limit(300).all()
     render_df_html(dataframe_with_badges(rows))
+    open_ticket_picker(rows, "manage")
 
 def page_reports(db: Session, current_user: str, role: str):
     st.subheader("Reports & Analytics")
     q = filter_by_role(db.query(Ticket), role, current_user)
-    rows: List[Ticket] = q.order_by(Ticket.created_at.asc()).all()
+    rows: List['Ticket'] = q.order_by(Ticket.created_at.asc()).all()
     if not rows:
         st.info("No tickets yet."); return
     df = pd.DataFrame([{"created_at": t.created_at, "status": t.status} for t in rows])
@@ -508,13 +493,10 @@ def page_ticket_detail(db: Session, ticket_key: str, current_user: str, role: st
         st.error("Ticket not found."); return
     if role != "Admin" and t.assigned_to not in GROUP_MEMBERS.get(role, []):
         st.error("⛔ You do not have permission to view this ticket."); return
-
     st.markdown(f"### 🎫 {t.ticket_key} — {t.customer_name}")
     st.write(f"**Created:** {fmt_dt(t.created_at, TZ)} | **SLA Due:** {fmt_dt(t.sla_due, TZ) if t.sla_due else '-'}")
-
     st.write("#### Ticket Description")
     st.markdown(f"> {t.description or '_No description provided._'}")
-
     note_events = [e for e in t.events if e.note]
     if note_events:
         with st.expander("📜 Show all notes"):
@@ -522,7 +504,6 @@ def page_ticket_detail(db: Session, ticket_key: str, current_user: str, role: st
                 st.markdown(f"- *{fmt_dt(e.created_at, TZ)}* **{e.actor}**: {e.note}")
     else:
         st.write("_No notes yet._")
-
     with st.form("update_ticket", clear_on_submit=False):
         c1, c2, c3 = st.columns(3)
         new_status = c1.selectbox("Status", STATUS_ORDER, index=STATUS_ORDER.index(t.status), key="detail_status")
@@ -530,46 +511,36 @@ def page_ticket_detail(db: Session, ticket_key: str, current_user: str, role: st
         assignees_only_people = [a for a in ASSIGNEES[1:] if a not in ("Billing","Support","Sales","All")]
         default_idx = assignees_only_people.index(t.assigned_to) if t.assigned_to in assignees_only_people else 0
         new_assigned = c3.selectbox("Assigned To", assignees_only_people, index=default_idx, key="detail_assigned")
-
         new_note = st.text_area("Add Note", key="detail_note")
         submitted = st.form_submit_button("💾 Save Changes")
-
         if submitted:
             t.status = new_status
             t.priority = new_priority
             t.assigned_to = new_assigned
             db.commit()
-
             if new_note.strip():
-                db.add(TicketEvent(ticket_id=t.id, actor=current_user, action="note", note=new_note.strip()))
-                db.commit()
-
+                db.add(TicketEvent(ticket_id=t.id, actor=current_user, action="note", note=new_note.strip())); db.commit()
             st.success("✅ Ticket updated successfully!")
-            st.query_params.clear()
+            set_qp(None)
             st.rerun()
-
     if note_events:
         st.write("#### Recent Notes")
         recent = sorted(note_events, key=lambda ev: ev.created_at, reverse=True)[:3]
         for e in recent:
             st.markdown(f"- *{fmt_dt(e.created_at, TZ)}* **{e.actor}**: {e.note}")
-
     if st.button("⬅ Back to Dashboard"):
-        st.query_params.clear()
+        set_qp(None)
         st.rerun()
 
 def page_user_management():
     st.subheader("👤 User Management (Admin Only)")
     users = load_users()
-
-    st.write("### Current Users")
     st.table(pd.DataFrame([{"User": u, "Group": info["group"]} for u, info in users.items()]))
-
     st.write("### ➕ Add User")
-    new_user = st.text_input("Username")
-    new_pass = st.text_input("Password", type="password")
-    new_group = st.selectbox("Group", ["Admin", "Support", "Billing/Sales"])
-    if st.button("Add User"):
+    new_user = st.text_input("Username", key="um_new_user")
+    new_pass = st.text_input("Password", type="password", key="um_new_pass")
+    new_group = st.selectbox("Group", ["Admin", "Support", "Billing/Sales"], key="um_new_group")
+    if st.button("Add User", key="um_add_btn"):
         if not new_user.strip():
             st.error("Username is required.")
         elif new_user in users:
@@ -579,20 +550,18 @@ def page_user_management():
             save_users(users)
             st.success(f"User {new_user} added.")
             st.rerun()
-
     st.write("### 🔑 Change Password")
     if users:
-        sel_user = st.selectbox("Select User", list(users.keys()))
-        new_pw = st.text_input("New Password", type="password")
-        if st.button("Update Password"):
+        sel_user = st.selectbox("Select User", list(users.keys()), key="um_sel_user")
+        new_pw = st.text_input("New Password", type="password", key="um_new_pw")
+        if st.button("Update Password", key="um_upd_pw"):
             users[sel_user]["password"] = new_pw or users[sel_user]["password"]
             save_users(users)
             st.success(f"Password for {sel_user} updated.")
-
     st.write("### ❌ Remove User")
     if users:
-        del_user = st.selectbox("Delete User", list(users.keys()))
-        if st.button("Delete User"):
+        del_user = st.selectbox("Delete User", list(users.keys()), key="um_del_user")
+        if st.button("Delete User", key="um_del_btn"):
             if del_user == "Admin":
                 st.error("Cannot delete Admin account!")
             else:
@@ -604,17 +573,12 @@ def page_user_management():
 def page_customers_admin(default_url: str = ""):
     st.subheader("👥 Customers (Admin Only)")
     st.caption("Import/Sync customers from Google Sheets and browse them here.")
-    st.info("Tips: Click the correct sheet tab in Google Sheets and copy the URL so it includes **gid=...**. Or use **File → Share → Publish to the web → CSV** and paste that published link. You can also upload a CSV below.")
-
-    sheet_url = st.text_input("Google Sheet URL (viewable or published CSV link)", value=default_url or "")
+    st.info("Tips: Copy a URL with **gid=...** for the right tab, or publish to CSV. You can also upload a CSV below.")
+    sheet_url = st.text_input("Google Sheet URL (viewable or published CSV link)", value=default_url or "", key="cust_sheet_url")
     c1, c2 = st.columns(2)
-    with c1:
-        preview = st.button("🔎 Preview")
-    with c2:
-        do_import = st.button("⬇️ Import / Upsert")
-
-    uploaded = st.file_uploader("…or upload a CSV file", type=["csv"])
-
+    with c1: preview = st.button("🔎 Preview", key="cust_preview")
+    with c2: do_import = st.button("⬇️ Import / Upsert", key="cust_import")
+    uploaded = st.file_uploader("…or upload a CSV file", type=["csv"], key="cust_file")
     df_norm = None
     if uploaded is not None:
         try:
@@ -623,40 +587,43 @@ def page_customers_admin(default_url: str = ""):
             st.success("CSV uploaded.")
         except Exception as e:
             st.error(f"Failed to parse uploaded CSV: {e}")
-
     if sheet_url and (preview or do_import) and df_norm is None:
         try:
             df_raw = fetch_customers_from_sheet(sheet_url)
             df_norm = normalize_customer_df(df_raw)
         except Exception as e:
             st.error(f"Failed to read sheet: {e}")
-
     if df_norm is not None:
         st.write("**Preview (first 20 rows after normalization):**")
         st.dataframe(df_norm.head(20))
-
         if do_import:
             with next(get_db()) as db:
                 ins, upd = upsert_customers(db, df_norm)
             st.success(f"✅ Import complete: {ins} inserted, {upd} updated")
 
 # ---------- App ----------
-CURRENT_USER = st.session_state.get("user", None)
-ROLE = st.session_state.get("role", None)
+cookie_auth = _read_auth_cookie()
+if cookie_auth and "user" not in st.session_state:
+    st.session_state["user"], st.session_state["role"] = cookie_auth
+
+CURRENT_USER = st.session_state.get("user")
+ROLE = st.session_state.get("role")
 
 if not CURRENT_USER or not ROLE:
     login()
 else:
     USERS = load_users()
-    GROUP_MEMBERS = compute_group_members(USERS)
-
+    GROUP_MEMBERS = load_groups(USERS)
     st.info(f"👋 Logged in as **{CURRENT_USER}** (Group: {ROLE})")
-    if st.button("Logout"):
-        st.session_state.clear()
-        st.rerun()
+    colA, colB = st.columns([0.85, 0.15])
+    with colB:
+        if st.button("Logout", key="logout_btn"):
+            _clear_auth_cookie()
+            st.session_state.clear()
+            st.rerun()
 
-    params = st.query_params
-    if "ticket" in params:
+    params = st.query_params if hasattr(st, "query_params") else st.experimental_get_query_params()
+    if "ticket" in (params or {}):
         ticket_key = params["ticket"]
         with next(get_db()) as db:
             page_ticket_detail(db, ticket_key, CURRENT_USER, ROLE)
@@ -667,23 +634,13 @@ else:
             tabs = st.tabs(["📊 Dashboard","➕ New Ticket","🛠️ Manage","📈 Reports"])
 
         with tabs[0]:
-            with next(get_db()) as db:
-                page_dashboard(db, CURRENT_USER, ROLE)
-
+            with next(get_db()) as db: page_dashboard(db, CURRENT_USER, ROLE)
         with tabs[1]:
-            with next(get_db()) as db:
-                page_new_ticket(db, CURRENT_USER)
-
+            with next(get_db()) as db: page_new_ticket(db, CURRENT_USER)
         with tabs[2]:
-            with next(get_db()) as db:
-                page_manage(db, CURRENT_USER, ROLE)
-
+            with next(get_db()) as db: page_manage(db, CURRENT_USER, ROLE)
         with tabs[3]:
-            with next(get_db()) as db:
-                page_reports(db, CURRENT_USER, ROLE)
-
+            with next(get_db()) as db: page_reports(db, CURRENT_USER, ROLE)
         if ROLE == "Admin":
-            with tabs[4]:
-                page_user_management()
-            with tabs[5]:
-                page_customers_admin("https://docs.google.com/spreadsheets/d/1ywqLJIzydhifdUjX9Zo03B536LEUhH483hRAazT3zV8/edit?usp=sharing")
+            with tabs[4]: page_user_management()
+            with tabs[5]: page_customers_admin("https://docs.google.com/spreadsheets/d/1ywqLJIzydhifdUjX9Zo03B536LEUhH483hRAazT3zV8/edit?usp=sharing")
