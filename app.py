@@ -365,10 +365,13 @@ def login():
             st.session_state["user"] = user
             st.session_state["role"] = users[user]["group"]
             _write_auth_cookie(user, users[user]["group"])
+            # ✅ allow cookie restore again from now on
+            st.session_state.pop("force_login", None)
             st.success(f"Welcome {user} ({users[user]['group']})")
             st.rerun()
         else:
             st.error("Invalid login")
+
 
 def page_dashboard(db: Session, current_user: str, role: str):
     q = filter_by_role(db.query(Ticket), role, current_user)
