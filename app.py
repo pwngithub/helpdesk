@@ -475,6 +475,14 @@ def page_new_ticket(db: Session, current_user: str):
         st.success(f"✅ Ticket created: {t.ticket_key}")
 
 
+if sel:
+    idx = labels.index(sel)
+    c = matches[idx]
+    st.session_state["new_acct"] = c.account_number or ""
+    st.session_state["new_name"] = c.name or ""
+    st.session_state["new_phone"] = c.phone or ""
+    st.success(f"Loaded customer: {c.name} ({c.account_number})")
+    # ❌ NO st.rerun() here
 
                 
             if name:
