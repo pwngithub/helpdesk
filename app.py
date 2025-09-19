@@ -405,37 +405,75 @@ def page_dashboard(db: Session, current_user: str, role: str):
 
 def page_new_ticket(db: Session, current_user: str):
     st.subheader("Create New Ticket")
-   with st.expander("Lookup existing customer", expanded=True):
-    acct_search = st.text_input("Account Number", key="lookup_acct")
-    name_search = st.text_input("Customer Name", key="lookup_name")
 
-    matches = []
-    if acct_search.strip():
-        matches = db.query(Customer).filter(
-            Customer.account_number.ilike(f"%{acct_search.strip()}%")
-        ).all()
-    elif name_search.strip():
-        matches = db.query(Customer).filter(
-            Customer.name.ilike(f"%{name_search.strip()}%")
-        ).order_by(Customer.name.asc()).limit(20).all()
+    # ---------------- Live customer lookup ----------------
+    with st.expander("Lookup existing customer", expanded=True):
+        acct_search = st.text_input("Account Number", key="lookup_acct")
+        name_search = st.text_input("Customer Name", key="lookup_name")
 
-    if matches:
-        if len(matches) == 1:
-            c = matches[0]
-            st.session_state["new_acct"] = c.account_number or ""
-            st.session_state["new_name"] = c.name or ""
-            st.session_state["new_phone"] = c.phone or ""
-            st.success(f"Loaded customer: {c.name} ({c.account_number})")
-        else:
-            labels = [f"{c.name} — {c.account_number} — {c.phone}" for c in matches]
-            sel = st.selectbox("Select a customer", labels, key="lookup_sel")
-            if sel:
-                idx = labels.index(sel)
-                c = matches[idx]
+        matches = []
+        if acct_search.strip():
+            matches = db.query(Customer).filter(
+                Customer.account_number.ilike(f"%{acct_search.strip()}%")
+            ).all()
+        elif name_search.strip():
+            matches = db.query(Customer).filter(
+                Customer.name.ilike(f"%{name_search.strip()}%")
+            ).order_by(Customer.name.asc()).limit(20).all()
+
+        if matches:
+            if len(matches) == 1:
+                c = matches[0]
                 st.session_state["new_acct"] = c.account_number or ""
                 st.session_state["new_name"] = c.name or ""
                 st.session_state["new_phone"] = c.phone or ""
                 st.success(f"Loaded customer: {c.name} ({c.account_number})")
+            else:
+                labels = [f"{c.name} — {c.account_number} — {c.phone}" for c in matches]
+                sel = st.selectbox("Select a customer", labels, key="lookup_sel")
+                if sel:
+                    idx = labels.index(sel)
+                    c = matches[idx]
+                    st.session_state["new_acct"] = c.account_number or ""
+                    st.session_state["new_name"] = c.name or ""
+                    st.session_state["new_phone"] = c.phone or ""
+                    st.success(f"Loaded customer: {c.name} ({c.account_number})")
+
+    # ---------------- New Ticket form fields ----------------
+    customer_name = st.text_input("Customer Name", key="new_name")
+    account_number = st.text_input("Account Number", key="new_acct")
+    phone = st.text_input("Phone", key="new_phone")
+    service_type = st.selectbox("Service Type", ["Fiber","DSL","Fixed Wireless","TV","Voice","Other"])
+    call_source = st.selectbox("Call Source", ["phone","email","chat","walk-in"])
+    call_reason = st.selectbox("Call Reason", ["outage","repair","billing","upgrade","cancel","new service","other"])
+    priority = st.selectbox("Priority", PRIORITY_ORDER, index=1)
+    description = st.text_area("Description / Notes", height=120)
+    assigned_to = st.selectbox("Assign To", [a for a in ASSIGNEES[1:]])
+
+    if st.button("Create Ticket", use_container_width=True, key="create_ticket_btn"):
+        created_at = datetime.utcnow()
+        t = Ticket(
+            ticket_key=f"TCK-{int(created_at.timestamp())}",
+            created_at=created_at,
+            customer_name=(st.session_state.get("new_name") or customer_name or "").strip(),
+            account_number=(st.session_state.get("new_acct") or account_number or "").strip(),
+            phone=(st.session_state.get("new_phone") or phone or "").strip(),
+            service_type=service_type,
+            call_source=call_source,
+            call_reason=call_reason,
+            description=(description or "").strip(),
+            status="Open",
+            priority=priority,
+            assigned_to=assigned_to,
+            sla_due=compute_sla_due(priority, created_at),
+        )
+        db.add(t)
+        db.commit()
+        db.refresh(t)
+        db.add(TicketEvent(ticket_id=t.id, actor=current_user, action="create", note="Ticket created"))
+        db.commit()
+        st.success(f"✅ Ticket created: {t.ticket_key}")
+
 
                     st.rerun()
             if name:
