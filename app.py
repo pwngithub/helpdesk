@@ -7,18 +7,19 @@ import hmac
 import base64
 import hashlib
 import urllib.request
-from datetime import datetime, timedelta
-from typing import List, Tuple, Dict, Optional
+from datetime import datetime
+from typing import Dict, List
 
 import pandas as pd
 import streamlit as st
 import extra_streamlit_components as stx
 from dotenv import load_dotenv
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from db import engine, get_db
 from schema import Base, Ticket, TicketEvent, Customer
 from utils import compute_sla_due, fmt_dt
+from constants import STATUS_ORDER, PRIORITY_ORDER, STATUS_COLOR, PRIORITY_COLOR
 
 # ---------------- Bootstrap ----------------
 load_dotenv()
@@ -32,33 +33,11 @@ PIONEER_LOGO = (
     "369c5df0-5363-4827-b041-1add0367f447/PBB+long+logo.png?format=1500w"
 )
 
-CUSTOM_CSS = """
-<style>
-section.main { background: #F5F5F5 !important; }
-.pioneer-header { display:flex; align-items:center; gap:14px; background:#002856;
-  padding:10px 14px; border-radius:10px; margin:10px 0 16px 0; }
-.pioneer-header h2 { color:white; margin:0; font-size:22px; }
-.stButton>button { background:#3BAFDA; color:white; border:none; border-radius:10px; font-weight:600; padding:8px 14px; }
-.stButton>button:hover { background:#002856; }
-[data-testid="stMetricValue"] { color:#7AC143; font-weight:700; }
-.badge { display:inline-block; padding:3px 8px; border-radius:999px; font-size:12px; font-weight:700; color:white; }
-.badge.gray{ background:#6b7280; }
-.badge.blue{ background:#3BAFDA; }
-.badge.orange{ background:#f59e0b; }
-.badge.red{ background:#ef4444; }
-.badge.green{ background:#10b981; }
-.badge.purple{ background:#8b5cf6; }
-.badge.yellow{ background:#fbbf24; color:#111827; }
-.stDataFrame { border:1px solid #e5e7eb; border-radius:10px; background:white; }
-.small-note { color:#6b7280; font-size:12px; }
-.overdue { color:#ef4444; font-weight:700; }
-.almost { color:#f59e0b; font-weight:700; }
-.ok { color:#10b981; font-weight:700; }
-table { table-layout: auto; width: 100%; }
-td { white-space: normal !important; word-wrap: break-word !important; max-width: 520px; }
-</style>
-"""
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+def load_css(file_name):
+    with open(file_name) as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+
+load_css("style.css")
 st.markdown(
     f"""
     <div class="pioneer-header">
@@ -71,33 +50,36 @@ st.markdown(
 
 # ---------------- Users & Groups ----------------
 USER_FILE = "users.json"
-DEFAULT_USERS: Dict[str, Dict[str, str]] = {
-    "Admin": {"password": "admin123", "group": "Admin"},
-    "Chuck": {"password": "pass123", "group": "Support"},
-    "Aidan": {"password": "pass123", "group": "Support"},
-    "Billy": {"password": "pass123", "group": "Support"},
-    "Gabby": {"password": "pass123", "group": "Billing/Sales"},
-    "Gillian": {"password": "pass123", "group": "Billing/Sales"},
-    "Megan": {"password": "pass123", "group": "Billing/Sales"},
-}
 def load_users():
     if os.path.exists(USER_FILE):
         with open(USER_FILE, "r") as f:
             return json.load(f)
-    return DEFAULT_USERS
-def save_users(users):
-    with open(USER_FILE, "w") as f:
-        json.dump(users, f, indent=2)
-def load_groups(users):
-    groups: Dict[str, List[str]] = {}
-    for name, info in users.items():
-        grp = info.get("group", "Support")
-        groups.setdefault(grp, []).append(name)
-    groups["Admin"] = list(users.keys())
-    return groups
+    # This default is for first-time setup only. You should create users.json
+    return {"Admin": {"password": "CHANGE_ME", "group": "Admin"}}
+
+USERS = load_users()
+ASSIGNEES = ["Unassigned"] + list(USERS.keys())
+
+def hash_password(password: str) -> str:
+    """Hashes a password with a salt."""
+    salt = os.urandom(16)
+    pwd_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
+    return base64.b64encode(salt + pwd_hash).decode('ascii').strip()
+
+def verify_password(stored_password: str, provided_password: str) -> bool:
+    """Verifies a stored password against one provided by user"""
+    try:
+        decoded_password = base64.b64decode(stored_password)
+        salt = decoded_password[:16]
+        stored_hash = decoded_password[16:]
+        pwd_hash = hashlib.pbkdf2_hmac('sha256', provided_password.encode('utf-8'), salt, 100000)
+        return hmac.compare_digest(pwd_hash, stored_hash)
+    except Exception:
+        return False
 
 # ---------------- Auth cookie ----------------
 cookie_manager = stx.CookieManager()
+# ... (The rest of the cookie functions remain exactly the same)
 def _secret_key() -> bytes:
     try:
         sk = st.secrets["auth_secret"]
@@ -123,10 +105,12 @@ def _verify_token(token: str):
     except Exception:
         return None
 def _write_auth_cookie(user: str, role: str, days: int = 7):
+    from datetime import timedelta
     exp = datetime.utcnow() + timedelta(days=days)
     token = _sign_token(user, role, int(exp.timestamp()))
     cookie_manager.set("pioneer_auth", token, expires_at=exp, path="/", same_site="Lax", secure=False)
 def _clear_auth_cookie():
+    from datetime import timedelta
     try:
         cookie_manager.delete("pioneer_auth", path="/")
     except Exception:
@@ -138,15 +122,9 @@ def _read_auth_cookie():
     if not token: return None
     return _verify_token(token)
 
-# ---------------- Constants ----------------
-STATUS_ORDER = ["Open", "In Progress", "Escalated", "On Hold", "Resolved", "Closed"]
-PRIORITY_ORDER = ["Low", "Medium", "High", "Critical"]
-STATUS_COLOR = {"Open":"blue","In Progress":"purple","Escalated":"red","On Hold":"orange","Resolved":"green","Closed":"gray"}
-PRIORITY_COLOR = {"Low":"gray","Medium":"blue","High":"orange","Critical":"red"}
-ASSIGNEES = ["All", "Billing", "Support", "Sales", "BJ", "Megan", "Billy", "Gillian", "Gabby", "Chuck", "Aidan"]
-
 # ---------------- Helpers ----------------
 def badge(text, color): return f'<span class="badge {color}">{text}</span>'
+# ... (sla_countdown, dataframe_with_badges, render_df_html helpers are the same)
 def sla_countdown(now, due):
     if not due: return "-", "gray"
     hours = (due - now).total_seconds() / 3600
@@ -182,7 +160,7 @@ def filter_by_role(query, role, user):
     if role == "Admin": return query
     return query.filter(Ticket.assigned_to == user)
 
-# ---------------- Google Sheets helpers ----------------
+# ... (Google Sheets helper functions are the same)
 def build_candidate_csv_urls(sheet_url: str) -> list[str]:
     urls = []
     m = re.search(r'/spreadsheets/d/([a-zA-Z0-9-_]+)', sheet_url)
@@ -227,26 +205,27 @@ def upsert_customers(db, df):
 # ---------------- Pages ----------------
 def login():
     st.title("🔐 Pioneer Ticketing Login")
-    users = load_users()
-    user = st.selectbox("Employee", list(users.keys()))
+    user = st.selectbox("Employee", list(USERS.keys()))
     pw = st.text_input("Password", type="password")
     if st.button("Login"):
-        if user in users and pw == users[user]["password"]:
+        if user in USERS and verify_password(USERS[user]["password"], pw):
             st.session_state["user"] = user
-            st.session_state["role"] = users[user]["group"]
-            _write_auth_cookie(user, users[user]["group"])
+            st.session_state["role"] = USERS[user]["group"]
+            _write_auth_cookie(user, USERS[user]["group"])
             st.session_state.pop("force_login", None)
             st.rerun()
-        else: st.error("Invalid login")
+        else:
+            st.error("Invalid username or password")
 
 def page_dashboard(db, user, role):
-    q = filter_by_role(db.query(Ticket), role, user)
+    # Eager-load events to prevent N+1 queries
+    q = filter_by_role(db.query(Ticket).options(joinedload(Ticket.events)), role, user)
     rows = q.order_by(Ticket.created_at.desc()).all()
     render_df_html(dataframe_with_badges(rows))
 
 def page_new_ticket(db, user):
     st.subheader("Create New Ticket")
-    # live lookup
+    # ... (rest of new ticket page is the same)
     acct = st.text_input("Account Number (search)", key="lookup_acct")
     name = st.text_input("Customer Name (search)", key="lookup_name")
     matches = []
@@ -270,7 +249,7 @@ def page_new_ticket(db, user):
     call_reason = st.selectbox("Reason", ["outage","repair","billing","upgrade","cancel","other"])
     priority = st.selectbox("Priority", PRIORITY_ORDER, 1)
     description = st.text_area("Description", height=120)
-    assigned_to = st.selectbox("Assign To", [a for a in ASSIGNEES[1:]])
+    assigned_to = st.selectbox("Assign To", ASSIGNEES)
     if st.button("Create Ticket"):
         created_at = datetime.utcnow()
         t = Ticket(ticket_key=f"TCK-{int(created_at.timestamp())}", created_at=created_at,
@@ -280,15 +259,76 @@ def page_new_ticket(db, user):
                    assigned_to=assigned_to, sla_due=compute_sla_due(priority, created_at))
         db.add(t); db.commit(); st.success(f"✅ Created {t.ticket_key}")
 
-def page_customers_admin(url=""):
+def page_customers_admin():
     st.subheader("👥 Customers (Admin Only)")
-    sheet_url = st.text_input("Google Sheet URL", url)
+    sheet_url = st.text_input("Google Sheet URL", os.getenv("GOOGLE_SHEET_URL", ""))
     if st.button("Import"):
         try:
             df = normalize_customer_df(fetch_customers_from_sheet(sheet_url))
             with next(get_db()) as db: ins,upd = upsert_customers(db, df)
             st.success(f"Imported: {ins} new, {upd} updated")
         except Exception as e: st.error(str(e))
+
+def page_ticket_detail(db: Session, ticket_key: str, actor: str):
+    """Displays and manages a single ticket."""
+    ticket = db.query(Ticket).options(joinedload(Ticket.events)).filter(Ticket.ticket_key == ticket_key).first()
+
+    if not ticket:
+        st.error(f"Ticket {ticket_key} not found.")
+        if st.button("← Back to Dashboard"):
+            st.query_params.clear()
+            st.rerun()
+        return
+
+    st.title(f"Ticket: {ticket.ticket_key}")
+    st.markdown(f"**Customer:** {ticket.customer_name} (`{ticket.account_number}`)")
+    st.link_button("← Back to Dashboard", "/")
+
+    # ----- UPDATE FORMS -----
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        new_status = st.selectbox("Status", options=STATUS_ORDER, index=STATUS_ORDER.index(ticket.status))
+        if new_status != ticket.status:
+            ticket.status = new_status
+            db.add(TicketEvent(ticket_id=ticket.id, actor=actor, action=f"Status changed to {new_status}"))
+            db.commit()
+            st.rerun()
+    with col2:
+        new_priority = st.selectbox("Priority", options=PRIORITY_ORDER, index=PRIORITY_ORDER.index(ticket.priority))
+        if new_priority != ticket.priority:
+            ticket.priority = new_priority
+            ticket.sla_due = compute_sla_due(new_priority, ticket.created_at)
+            db.add(TicketEvent(ticket_id=ticket.id, actor=actor, action=f"Priority changed to {new_priority}"))
+            db.commit()
+            st.rerun()
+    with col3:
+        current_idx = ASSIGNEES.index(ticket.assigned_to) if ticket.assigned_to in ASSIGNEES else 0
+        new_assignee = st.selectbox("Assigned To", options=ASSIGNEES, index=current_idx)
+        if new_assignee != ticket.assigned_to:
+            ticket.assigned_to = new_assignee
+            db.add(TicketEvent(ticket_id=ticket.id, actor=actor, action=f"Assigned to {new_assignee}"))
+            db.commit()
+            st.rerun()
+
+    # ----- ADD A NOTE -----
+    with st.form("add_note_form"):
+        note_text = st.text_area("Add a new note or event log:")
+        submitted = st.form_submit_button("Add Note")
+        if submitted and note_text:
+            db.add(TicketEvent(ticket_id=ticket.id, actor=actor, action="Note added", note=note_text))
+            db.commit()
+            st.success("Note added!")
+            st.rerun()
+
+    # ----- EVENT HISTORY -----
+    st.subheader("History & Events")
+    events = sorted(ticket.events, key=lambda e: e.created_at, reverse=True)
+    for event in events:
+        with st.container(border=True):
+            st.markdown(f"**{event.actor}** · _{fmt_dt(event.created_at)}_")
+            st.caption(f"Action: {event.action}")
+            if event.note:
+                st.markdown(event.note)
 
 # ---------------- App ----------------
 force_login = st.session_state.get("force_login", False)
@@ -297,22 +337,30 @@ if cookie_auth and "user" not in st.session_state:
     st.session_state["user"], st.session_state["role"] = cookie_auth
 USER = st.session_state.get("user"); ROLE = st.session_state.get("role")
 
+query_params = st.query_params.to_dict()
+ticket_key_to_view = query_params.get("ticket")
+
 if not USER or not ROLE:
     login()
+elif ticket_key_to_view:
+    with next(get_db()) as db:
+        page_ticket_detail(db, ticket_key_to_view, USER)
 else:
     st.info(f"👋 Logged in as {USER} ({ROLE})")
     if st.button("Logout"):
         _clear_auth_cookie()
-        for k in ("user","role"): st.session_state.pop(k, None)
-        st.session_state["force_login"]=True
+        for k in ("user", "role"): st.session_state.pop(k, None)
+        st.session_state["force_login"] = True
         st.rerun()
-    if ROLE=="Admin":
-        tabs=st.tabs(["Dashboard","New Ticket","Customers"])
-    else:
-        tabs=st.tabs(["Dashboard","New Ticket"])
+
+    admin_tabs = ["Dashboard", "New Ticket", "Customers"]
+    user_tabs = ["Dashboard", "New Ticket"]
+    tabs_to_show = admin_tabs if ROLE == "Admin" else user_tabs
+    
+    tabs = st.tabs(tabs_to_show)
     with tabs[0]:
         with next(get_db()) as db: page_dashboard(db, USER, ROLE)
     with tabs[1]:
         with next(get_db()) as db: page_new_ticket(db, USER)
-    if ROLE=="Admin":
-        with tabs[2]: page_customers_admin("https://docs.google.com/spreadsheets/d/1ywqLJIzydhifdUjX9Zo03B536LEUhH483hRAazT3zV8/edit?usp=sharing")
+    if ROLE == "Admin":
+        with tabs[2]: page_customers_admin()
