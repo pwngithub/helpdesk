@@ -1,0 +1,23 @@
+/* style.css */
+section.main { background: #F5F5F5 !important; }
+.pioneer-header { display:flex; align-items:center; gap:14px; background:#002856;
+  padding:10px 14px; border-radius:10px; margin:10px 0 16px 0; }
+.pioneer-header h2 { color:white; margin:0; font-size:22px; }
+.stButton>button { background:#3BAFDA; color:white; border:none; border-radius:10px; font-weight:600; padding:8px 14px; }
+.stButton>button:hover { background:#002856; }
+[data-testid="stMetricValue"] { color:#7AC143; font-weight:700; }
+.badge { display:inline-block; padding:3px 8px; border-radius:999px; font-size:12px; font-weight:700; color:white; }
+.badge.gray{ background:#6b7280; }
+.badge.blue{ background:#3BAFDA; }
+.badge.orange{ background:#f59e0b; }
+.badge.red{ background:#ef4444; }
+.badge.green{ background:#10b981; }
+.badge.purple{ background:#8b5cf6; }
+.badge.yellow{ background:#fbbf24; color:#111827; }
+.stDataFrame { border:1px solid #e5e7eb; border-radius:10px; background:white; }
+.small-note { color:#6b7280; font-size:12px; }
+.overdue { color:#ef4444; font-weight:700; }
+.almost { color:#f59e0b; font-weight:700; }
+.ok { color:#10b981; font-weight:700; }
+table { table-layout: auto; width: 100%; }
+td { white-space: normal !important; word-wrap: break-word !important; max-width: 520px; }
