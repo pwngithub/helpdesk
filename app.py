@@ -269,6 +269,21 @@ def page_customers_admin():
             st.success(f"Imported: {ins} new, {upd} updated")
         except Exception as e: st.error(str(e))
 
+def page_user_admin():
+    """An admin page for managing users and hashing passwords."""
+    st.subheader("🔑 User Management")
+    st.write("Use this tool to generate a secure password hash for the `users.json` file.")
+
+    with st.form("hash_generator"):
+        password = st.text_input("Enter a new password", type="password")
+        submitted = st.form_submit_button("Generate Hash")
+
+        if submitted and password:
+            hashed_pw = hash_password(password)
+            st.write("Copy this hash into your `users.json` file:")
+            st.code(hashed_pw, language="text")
+            st.warning("Clear the password field after you have copied the hash.")
+
 def page_ticket_detail(db: Session, ticket_key: str, actor: str):
     """Displays and manages a single ticket."""
     ticket = db.query(Ticket).options(joinedload(Ticket.events)).filter(Ticket.ticket_key == ticket_key).first()
@@ -353,7 +368,7 @@ else:
         st.session_state["force_login"] = True
         st.rerun()
 
-    admin_tabs = ["Dashboard", "New Ticket", "Customers"]
+    admin_tabs = ["Dashboard", "New Ticket", "Customers", "User Admin"]
     user_tabs = ["Dashboard", "New Ticket"]
     tabs_to_show = admin_tabs if ROLE == "Admin" else user_tabs
     
@@ -362,5 +377,9 @@ else:
         with next(get_db()) as db: page_dashboard(db, USER, ROLE)
     with tabs[1]:
         with next(get_db()) as db: page_new_ticket(db, USER)
+    
     if ROLE == "Admin":
-        with tabs[2]: page_customers_admin()
+        with tabs[2]:
+            page_customers_admin()
+        with tabs[3]:
+            page_user_admin()
