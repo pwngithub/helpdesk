@@ -2,10 +2,12 @@ import os
 import io
 import re
 import urllib.request
+import requests
 from datetime import datetime
 import pandas as pd
 import streamlit as st
 from sqlalchemy.orm import joinedload
+from dotenv import load_dotenv
 
 from db import engine, get_db
 from schema import Base, Ticket, TicketEvent, Customer
@@ -15,6 +17,7 @@ from constants import STATUS_ORDER, PRIORITY_ORDER, STATUS_COLOR, PRIORITY_COLOR
 # ---------------------- INITIAL SETUP ----------------------
 Base.metadata.create_all(bind=engine)
 st.set_page_config(page_title="Pioneer Helpdesk", page_icon="🎫", layout="wide")
+load_dotenv()  # Load GOOGLE_API_KEY from .env if present
 
 # Pioneer Branding
 PIONEER_LOGO = (
@@ -28,44 +31,51 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ---------------------- GOOGLE SHEETS IMPORT ----------------------
-DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1ywqLJIzydhifdUjX9Zo03B536LEUhH483hRAazT3zV8/edit?usp=sharing"
+# ---------------------- GOOGLE SHEETS API IMPORT ----------------------
+def fetch_customers_from_sheet_api_key() -> pd.DataFrame:
+    """Fetch customers securely from Google Sheets using API key."""
+    SHEET_ID = "1ywqLJIzydhifdUjX9Zo03B536LEUhH483hRAazT3zV8"
+    RANGE_NAME = "Customers!A:D"  # Adjust tab and range
+    api_key = os.getenv("GOOGLE_API_KEY", st.secrets.get("GOOGLE_API_KEY", ""))
 
-def build_candidate_csv_urls(sheet_url: str) -> list[str]:
-    urls = []
-    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", sheet_url)
-    if not m:
-        return urls
-    sid = m.group(1)
-    urls.append(f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv")
-    return urls
+    if not api_key:
+        raise ValueError("Google API key not found. Please set GOOGLE_API_KEY in .env or Streamlit secrets.")
 
-def fetch_customers_from_sheet(sheet_url: str) -> pd.DataFrame:
-    for u in build_candidate_csv_urls(sheet_url):
-        try:
-            req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req) as r:
-                return pd.read_csv(io.StringIO(r.read().decode("utf-8")))
-        except Exception:
-            pass
-    raise ValueError("Failed to read sheet.")
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/{RANGE_NAME}?key={api_key}"
+    response = requests.get(url)
 
-def normalize_customer_df(df: pd.DataFrame) -> pd.DataFrame:
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    acct_col = next((c for c in df.columns if "account" in c or "acct" in c), None)
-    name_col = next((c for c in df.columns if "name" in c), None)
-    phone_col = next((c for c in df.columns if "contact" in c or "phone" in c), None)
-    mapping = {}
-    if acct_col: mapping[acct_col] = "account_number"
-    if name_col: mapping[name_col] = "name"
-    if phone_col: mapping[phone_col] = "phone"
-    df = df.rename(columns=mapping)
+    if response.status_code != 200:
+        raise ValueError(f"Google Sheets API error: {response.status_code} - {response.text}")
+
+    data = response.json()
+    values = data.get("values", [])
+    if not values:
+        raise ValueError("No data returned from sheet")
+
+    headers = [h.strip().lower() for h in values[0]]
+    rows = values[1:]
+    df = pd.DataFrame(rows, columns=headers)
+
+    # Normalize columns
+    rename_map = {
+        "account": "account_number",
+        "account #": "account_number",
+        "account number": "account_number",
+        "name": "name",
+        "contact method": "phone",
+        "phone": "phone",
+    }
+    df = df.rename(columns=rename_map)
+
+    # Ensure expected columns
     for key in ["account_number", "name", "phone"]:
         if key not in df.columns:
             df[key] = ""
+
     return df[["account_number", "name", "phone"]]
 
 def upsert_customers(db, df):
+    """Upsert customers safely from dataframe."""
     ins = upd = 0
     for _, r in df.iterrows():
         acct = str(r.get("account_number") or "").strip()
@@ -87,13 +97,13 @@ def upsert_customers(db, df):
     return ins, upd
 
 def sync_customers():
+    """Sync customers from Google Sheets API using key."""
     with st.spinner("🔄 Syncing customer data from Google Sheets..."):
         try:
-            df_raw = fetch_customers_from_sheet(DEFAULT_SHEET_URL)
-            df_norm = normalize_customer_df(df_raw)
-            if not df_norm.empty:
+            df_raw = fetch_customers_from_sheet_api_key()
+            if not df_raw.empty:
                 with next(get_db()) as db:
-                    ins, upd = upsert_customers(db, df_norm)
+                    ins, upd = upsert_customers(db, df_raw)
                 st.success(f"✅ Sync complete — {ins} new, {upd} updated customers.")
             else:
                 st.warning("⚠️ Sheet was empty or missing expected columns.")
