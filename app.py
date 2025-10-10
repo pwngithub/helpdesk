@@ -106,19 +106,35 @@ def page_new_ticket(db):
 
 def page_customers_admin():
     st.subheader("👥 Customers")
-    url=st.text_input("Google Sheet URL")
-    c1,c2=st.columns(2)
-    with c1: preview=st.button("🔎 Preview")
-    with c2: imp=st.button("⬇️ Import / Upsert")
-    if preview or imp:
+    st.caption("Preview and Import customer data from Google Sheets into the database.")
+
+    sheet_url = st.text_input(
+        "Google Sheet URL",
+        os.getenv("GOOGLE_SHEET_URL", "https://docs.google.com/spreadsheets/d/1ywqLJIzydhifdUjX9Zo03B536LEUhH483hRAazT3zV8/edit?usp=sharing")
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        preview = st.button("🔎 Preview")
+    with c2:
+        import_btn = st.button("⬇️ Import / Upsert")
+
+    df_norm = None
+    if preview or import_btn:
         try:
-            df=normalize_customer_df(fetch_customers_from_sheet(url))
-            st.dataframe(df.head(20))
-            if imp:
-                with next(get_db()) as db:
-                    ins,upd=upsert_customers(db,df)
-                st.success(f"✅ Imported {ins} new, {upd} updated")
-        except Exception as e: st.error(str(e))
+            df_raw = fetch_customers_from_sheet(sheet_url)
+            df_norm = normalize_customer_df(df_raw)
+            if df_norm.empty:
+                st.warning("No customer data found in sheet.")
+            else:
+                st.dataframe(df_norm.head(20))
+                if import_btn:
+                    with next(get_db()) as db:
+                        ins, upd = upsert_customers(db, df_norm)
+                    st.success(f"✅ Import complete — {ins} new, {upd} updated customers.")
+        except Exception as e:
+            st.error(f"❌ Error reading sheet: {e}")
+
 
 ticket_key = st.query_params.get("ticket")
 
