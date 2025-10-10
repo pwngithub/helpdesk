@@ -120,21 +120,33 @@ def page_customers_admin():
                 st.success(f"✅ Imported {ins} new, {upd} updated")
         except Exception as e: st.error(str(e))
 
-ticket_key=st.query_params.get("ticket")
+ticket_key = st.query_params.get("ticket")
+
 if ticket_key:
     with next(get_db()) as db:
-        t=db.query(Ticket).filter(Ticket.ticket_key==ticket_key).first()
-        if not t: st.error("Ticket not found")
+        t = db.query(Ticket).filter(Ticket.ticket_key == ticket_key).first()
+        if not t:
+            st.error("Ticket not found.")
+            if st.button("← Back to Dashboard"):
+                st.query_params.clear()
+                st.rerun()
         else:
             st.title(f"{t.ticket_key} — {t.customer_name}")
-st.write(f"**Account:** {t.account_number}  \n**Phone:** {t.phone}")
-st.write(t.description or "")
-
+            st.write(f"**Account:** {t.account_number}  \n**Phone:** {t.phone}")
+            st.write(f"**Status:** {t.status}  \n**Priority:** {t.priority}")
+            st.write("---")
+            st.write(t.description or "")
 else:
     st.info(f"👋 Logged in automatically as {USER} ({ROLE})")
-    tabs=st.tabs(["Dashboard","New Ticket","Customers"])
-    with tabs[0]: 
-        with next(get_db()) as db: page_dashboard(db)
-    with tabs[1]: 
-        with next(get_db()) as db: page_new_ticket(db)
-    with tabs[2]: page_customers_admin()
+    tabs = st.tabs(["Dashboard", "New Ticket", "Customers"])
+
+    with tabs[0]:
+        with next(get_db()) as db:
+            page_dashboard(db)
+
+    with tabs[1]:
+        with next(get_db()) as db:
+            page_new_ticket(db)
+
+    with tabs[2]:
+        page_customers_admin()
