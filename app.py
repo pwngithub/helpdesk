@@ -1,7 +1,6 @@
 import os
 import io
 import re
-import time
 import urllib.request
 from datetime import datetime
 import pandas as pd
@@ -13,30 +12,25 @@ from schema import Base, Ticket, TicketEvent, Customer
 from utils import compute_sla_due, fmt_dt
 from constants import STATUS_ORDER, PRIORITY_ORDER, STATUS_COLOR, PRIORITY_COLOR
 
-# ---------------- Initialize ----------------
+# ---------------------- INITIAL SETUP ----------------------
 Base.metadata.create_all(bind=engine)
-st.set_page_config(page_title="Pioneer Ticketing", page_icon="🎫", layout="wide")
+st.set_page_config(page_title="Pioneer Helpdesk", page_icon="🎫", layout="wide")
 
-# --- Handle safe one-time redirect after creating ticket ---
-if st.session_state.get("redirect_to_dashboard"):
-    st.session_state.pop("redirect_to_dashboard", None)
-    st.session_state.pop("created_ticket", None)
-    st.query_params.clear()
-    st.experimental_rerun()
-
+# Pioneer Branding
 PIONEER_LOGO = (
     "https://images.squarespace-cdn.com/content/v1/651eb4433b13e72c1034f375/"
     "369c5df0-5363-4827-b041-1add0367f447/PBB+long+logo.png?format=1500w"
 )
-
 st.markdown(
-    f"<div style='display:flex;align-items:center;gap:10px'>"
+    f"<div style='display:flex;align-items:center;gap:10px;'>"
     f"<img src='{PIONEER_LOGO}' height='40'>"
-    f"<h2>Pioneer Ticketing</h2></div>",
+    f"<h2 style='margin:0;'>Pioneer Helpdesk</h2></div><hr>",
     unsafe_allow_html=True,
 )
 
-# ---------------- Google Sheets helpers ----------------
+# ---------------------- GOOGLE SHEETS IMPORT ----------------------
+DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1ywqLJIzydhifdUjX9Zo03B536LEUhH483hRAazT3zV8/edit?usp=sharing"
+
 def build_candidate_csv_urls(sheet_url: str) -> list[str]:
     urls = []
     m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", sheet_url)
@@ -57,11 +51,10 @@ def fetch_customers_from_sheet(sheet_url: str) -> pd.DataFrame:
     raise ValueError("Failed to read sheet.")
 
 def normalize_customer_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Handle mixed column names like Account #, Name, Contact Method, etc."""
     df.columns = [str(c).strip().lower() for c in df.columns]
     acct_col = next((c for c in df.columns if "account" in c or "acct" in c), None)
     name_col = next((c for c in df.columns if "name" in c), None)
-    phone_col = next((c for c in df.columns if "contact" in c or "phone" in c or "tel" in c), None)
+    phone_col = next((c for c in df.columns if "contact" in c or "phone" in c), None)
     mapping = {}
     if acct_col: mapping[acct_col] = "account_number"
     if name_col: mapping[name_col] = "name"
@@ -73,7 +66,6 @@ def normalize_customer_df(df: pd.DataFrame) -> pd.DataFrame:
     return df[["account_number", "name", "phone"]]
 
 def upsert_customers(db, df):
-    """Safe upsert even if values are numbers or NaN."""
     ins = upd = 0
     for _, r in df.iterrows():
         acct = str(r.get("account_number") or "").strip()
@@ -94,9 +86,26 @@ def upsert_customers(db, df):
     db.commit()
     return ins, upd
 
-# ---------------- Pages ----------------
+def sync_customers():
+    with st.spinner("🔄 Syncing customer data from Google Sheets..."):
+        try:
+            df_raw = fetch_customers_from_sheet(DEFAULT_SHEET_URL)
+            df_norm = normalize_customer_df(df_raw)
+            if not df_norm.empty:
+                with next(get_db()) as db:
+                    ins, upd = upsert_customers(db, df_norm)
+                st.success(f"✅ Sync complete — {ins} new, {upd} updated customers.")
+            else:
+                st.warning("⚠️ Sheet was empty or missing expected columns.")
+        except Exception as e:
+            st.warning(f"⚠️ Could not sync customers: {e}")
+
+# ---------------------- PAGE: DASHBOARD ----------------------
 def page_dashboard(db):
     rows = db.query(Ticket).options(joinedload(Ticket.events)).order_by(Ticket.created_at.desc()).all()
+    if not rows:
+        st.info("No tickets yet.")
+        return
     data = []
     for t in rows:
         data.append({
@@ -110,56 +119,33 @@ def page_dashboard(db):
             "Assigned": t.assigned_to or "-",
             "Reason": t.call_reason,
             "Service": t.service_type,
-            "Description": t.description or "-",
+            "Description": t.description or "-"
         })
-    if data:
-        st.write(pd.DataFrame(data).to_html(escape=False, index=False), unsafe_allow_html=True)
-    else:
-        st.info("No tickets yet.")
+    st.write(pd.DataFrame(data).to_html(escape=False, index=False), unsafe_allow_html=True)
 
+# ---------------------- PAGE: NEW TICKET ----------------------
 def page_new_ticket(db):
-    st.subheader("➕ New Ticket")
+    st.subheader("➕ Create New Ticket")
 
-    acct = st.text_input("Account Number (search)", key="acct_search", on_change=None)
-name = st.text_input("Customer Name (search)", key="name_search", on_change=None)
-matches = []
+    acct = st.text_input("Account Number (search)")
+    name = st.text_input("Customer Name (search)")
+    matches = []
 
-search_term = (acct or name).strip()
-
-# Perform live search while typing
-if search_term:
-    with next(get_db()) as db_search:
-        query = db_search.query(Customer)
+    search_term = (acct or name).strip()
+    if search_term:
         if acct:
-            matches = query.filter(Customer.account_number.ilike(f"%{acct}%")).limit(20).all()
+            matches = db.query(Customer).filter(Customer.account_number.ilike(f"%{acct}%")).limit(20).all()
         elif name:
-            matches = query.filter(Customer.name.ilike(f"%{name}%")).limit(20).all()
-
-
-# Perform live search while typing
-if search_term:
-    with next(get_db()) as db_search:
-        query = db_search.query(Customer)
-        if acct:
-            matches = query.filter(Customer.account_number.ilike(f"%{acct}%")).limit(20).all()
-        elif name:
-            matches = query.filter(Customer.name.ilike(f"%{name}%")).limit(20).all()
-
-
-    if acct.strip():
-        matches = db.query(Customer).filter(Customer.account_number.ilike(f"%{acct}%")).all()
-    elif name.strip():
-        matches = db.query(Customer).filter(Customer.name.ilike(f"%{name}%")).limit(20).all()
+            matches = db.query(Customer).filter(Customer.name.ilike(f"%{name}%")).limit(20).all()
 
     if matches:
-        labels = [f"{c.name} — {c.account_number} — {c.phone}" for c in matches]
-        sel = st.selectbox("Select a customer", [""] + labels)
-        if sel:
-            c = matches[labels.index(sel) - 1]
-            st.session_state["new_acct"] = c.account_number
-            st.session_state["new_name"] = c.name
-            st.session_state["new_phone"] = c.phone
-            st.success(f"Loaded: {c.name} ({c.account_number})")
+        st.write("### 🔍 Matching Customers")
+        for c in matches:
+            if st.button(f"{c.name} — {c.account_number} — {c.phone}", key=f"select_{c.id}"):
+                st.session_state["new_acct"] = c.account_number
+                st.session_state["new_name"] = c.name
+                st.session_state["new_phone"] = c.phone
+                st.success(f"Loaded: {c.name} ({c.account_number})")
 
     customer_name = st.text_input("Customer Name", key="new_name")
     account_number = st.text_input("Account Number", key="new_acct")
@@ -190,15 +176,22 @@ if search_term:
         db.add(t)
         db.commit()
         st.success(f"✅ Created {t.ticket_key}")
-        st.info("Returning to dashboard...")
+        st.info("🔄 Refreshing customers from Google Sheets...")
+        sync_customers()
         st.session_state["redirect_to_dashboard"] = True
-        st.session_state["created_ticket"] = t.ticket_key
         st.stop()
 
-def page_customers_admin():
+# ---------------------- PAGE: CUSTOMERS ----------------------
+def page_customers(db):
     st.subheader("👥 Customers")
-    st.caption("Customer data auto-imported from Google Sheets on load.")
+    rows = db.query(Customer).order_by(Customer.name).all()
+    if not rows:
+        st.info("No customers found.")
+        return
+    data = [{"Account #": c.account_number, "Name": c.name, "Phone": c.phone} for c in rows]
+    st.write(pd.DataFrame(data))
 
+# ---------------------- PAGE: TICKET DETAIL ----------------------
 def page_ticket_detail(db, ticket_key):
     t = db.query(Ticket).filter(Ticket.ticket_key == ticket_key).first()
     if not t:
@@ -208,40 +201,26 @@ def page_ticket_detail(db, ticket_key):
             st.rerun()
         return
     st.title(f"{t.ticket_key} — {t.customer_name}")
-    st.write(f"**Account:** {t.account_number}  \\n**Phone:** {t.phone}")
-    st.write(f"**Status:** {t.status}  \\n**Priority:** {t.priority}")
+    st.write(f"**Account:** {t.account_number}  \n**Phone:** {t.phone}")
+    st.write(f"**Status:** {t.status}  \n**Priority:** {t.priority}")
     st.write("---")
     st.write(t.description or "")
 
-# ---------------- Main App ----------------
-DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1ywqLJIzydhifdUjX9Zo03B536LEUhH483hRAazT3zV8/edit?usp=sharing"
+# ---------------------- MAIN APP ----------------------
+st.sidebar.title("📋 Navigation")
+page = st.sidebar.radio("Go to", ["Dashboard", "New Ticket", "Customers"])
 
-# --- Auto-import customers on load ---
-with st.spinner("🔄 Syncing customer data from Google Sheets..."):
-    try:
-        df_raw = fetch_customers_from_sheet(DEFAULT_SHEET_URL)
-        df_norm = normalize_customer_df(df_raw)
-        if not df_norm.empty:
-            with next(get_db()) as db:
-                ins, upd = upsert_customers(db, df_norm)
-            st.success(f"✅ Auto-sync complete — {ins} new, {upd} updated customers.")
-        else:
-            st.warning("⚠️ Customer sheet was empty or missing expected columns.")
-    except Exception as e:
-        st.warning(f"⚠️ Could not auto-sync customer data: {e}")
+sync_customers()
 
 ticket_key = st.query_params.get("ticket")
 if ticket_key:
     with next(get_db()) as db:
         page_ticket_detail(db, ticket_key)
 else:
-    st.info("👋 Logged in automatically as Admin")
-    tabs = st.tabs(["Dashboard", "New Ticket", "Customers"])
-    with tabs[0]:
-        with next(get_db()) as db:
+    with next(get_db()) as db:
+        if page == "Dashboard":
             page_dashboard(db)
-    with tabs[1]:
-        with next(get_db()) as db:
+        elif page == "New Ticket":
             page_new_ticket(db)
-    with tabs[2]:
-        page_customers_admin()
+        elif page == "Customers":
+            page_customers(db)
