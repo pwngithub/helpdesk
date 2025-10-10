@@ -127,9 +127,9 @@ if ticket_key:
         if not t: st.error("Ticket not found")
         else:
             st.title(f"{t.ticket_key} — {t.customer_name}")
-            st.write(f"**Account:** {t.account_number}  
-**Phone:** {t.phone}")
-            st.write(t.description)
+st.write(f"**Account:** {t.account_number}  \n**Phone:** {t.phone}")
+st.write(t.description or "")
+
 else:
     st.info(f"👋 Logged in automatically as {USER} ({ROLE})")
     tabs=st.tabs(["Dashboard","New Ticket","Customers"])
