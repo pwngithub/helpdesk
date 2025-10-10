@@ -162,7 +162,13 @@ st.session_state["new_acct"] = ""
 st.session_state["new_name"] = ""
 st.session_state["new_phone"] = ""
 st.query_params.clear()
-st.rerun()
+st.success(f"✅ Created {t.ticket_key}")
+
+        # --- Return to dashboard safely ---
+        import time
+        time.sleep(1.5)  # show success briefly
+        st.query_params.clear()
+        st.rerun()
 
 
 def page_customers_admin():
