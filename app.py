@@ -136,6 +136,16 @@ if search_term:
             matches = query.filter(Customer.name.ilike(f"%{name}%")).limit(20).all()
 
 
+# Perform live search while typing
+if search_term:
+    with next(get_db()) as db_search:
+        query = db_search.query(Customer)
+        if acct:
+            matches = query.filter(Customer.account_number.ilike(f"%{acct}%")).limit(20).all()
+        elif name:
+            matches = query.filter(Customer.name.ilike(f"%{name}%")).limit(20).all()
+
+
     if acct.strip():
         matches = db.query(Customer).filter(Customer.account_number.ilike(f"%{acct}%")).all()
     elif name.strip():
