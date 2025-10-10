@@ -213,4 +213,3 @@ else:
             page_new_ticket(db)
     with tabs[2]:
         page_customers_admin()
-"""
