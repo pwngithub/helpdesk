@@ -13,21 +13,35 @@ from schema import Base, Ticket, TicketEvent, Customer
 from utils import compute_sla_due, fmt_dt
 from constants import STATUS_ORDER, PRIORITY_ORDER, STATUS_COLOR, PRIORITY_COLOR
 
+# ---------------- Initialize ----------------
 Base.metadata.create_all(bind=engine)
 st.set_page_config(page_title="Pioneer Ticketing", page_icon="🎫", layout="wide")
 
-PIONEER_LOGO = "https://images.squarespace-cdn.com/content/v1/651eb4433b13e72c1034f375/369c5df0-5363-4827-b041-1add0367f447/PBB+long+logo.png?format=1500w"
+# --- Handle safe one-time redirect after creating ticket ---
+if st.session_state.get("redirect_to_dashboard"):
+    st.session_state.pop("redirect_to_dashboard", None)
+    st.session_state.pop("created_ticket", None)
+    st.query_params.clear()
+    st.experimental_rerun()
+
+PIONEER_LOGO = (
+    "https://images.squarespace-cdn.com/content/v1/651eb4433b13e72c1034f375/"
+    "369c5df0-5363-4827-b041-1add0367f447/PBB+long+logo.png?format=1500w"
+)
 
 st.markdown(
-    f"<div style='display:flex;align-items:center;gap:10px'><img src='{PIONEER_LOGO}' height='40'><h2>Pioneer Ticketing</h2></div>",
+    f"<div style='display:flex;align-items:center;gap:10px'>"
+    f"<img src='{PIONEER_LOGO}' height='40'>"
+    f"<h2>Pioneer Ticketing</h2></div>",
     unsafe_allow_html=True,
 )
 
 # ---------------- Google Sheets helpers ----------------
 def build_candidate_csv_urls(sheet_url: str) -> list[str]:
     urls = []
-    m = re.search(r'/spreadsheets/d/([a-zA-Z0-9-_]+)', sheet_url)
-    if not m: return urls
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", sheet_url)
+    if not m:
+        return urls
     sid = m.group(1)
     urls.append(f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv")
     return urls
@@ -43,6 +57,7 @@ def fetch_customers_from_sheet(sheet_url: str) -> pd.DataFrame:
     raise ValueError("Failed to read sheet.")
 
 def normalize_customer_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Handle mixed column names like Account #, Name, Contact Method, etc."""
     df.columns = [str(c).strip().lower() for c in df.columns]
     acct_col = next((c for c in df.columns if "account" in c or "acct" in c), None)
     name_col = next((c for c in df.columns if "name" in c), None)
@@ -58,6 +73,7 @@ def normalize_customer_df(df: pd.DataFrame) -> pd.DataFrame:
     return df[["account_number", "name", "phone"]]
 
 def upsert_customers(db, df):
+    """Safe upsert even if values are numbers or NaN."""
     ins = upd = 0
     for _, r in df.iterrows():
         acct = str(r.get("account_number") or "").strip()
@@ -103,10 +119,12 @@ def page_dashboard(db):
 
 def page_new_ticket(db):
     st.subheader("➕ New Ticket")
+
+    # --- Live lookup ---
     acct = st.text_input("Account Number (search)")
     name = st.text_input("Customer Name (search)")
-
     matches = []
+
     if acct.strip():
         matches = db.query(Customer).filter(Customer.account_number.ilike(f"%{acct}%")).all()
     elif name.strip():
@@ -122,14 +140,16 @@ def page_new_ticket(db):
             st.session_state["new_phone"] = c.phone
             st.success(f"Loaded: {c.name} ({c.account_number})")
 
+    # --- Ticket Fields ---
     customer_name = st.text_input("Customer Name", key="new_name")
     account_number = st.text_input("Account Number", key="new_acct")
     phone = st.text_input("Phone", key="new_phone")
-    service_type = st.selectbox("Service Type", ["Fiber","DSL","Wireless","TV","Voice","Other"])
-    call_reason = st.selectbox("Reason", ["outage","repair","billing","upgrade","cancel","other"])
+    service_type = st.selectbox("Service Type", ["Fiber", "DSL", "Wireless", "TV", "Voice", "Other"])
+    call_reason = st.selectbox("Reason", ["outage", "repair", "billing", "upgrade", "cancel", "other"])
     priority = st.selectbox("Priority", PRIORITY_ORDER, 1)
     description = st.text_area("Description", height=120)
-    assigned_to = st.selectbox("Assign To", ["Unassigned","Billing","Support","Sales","BJ","Megan","Billy","Gillian","Gabby","Chuck","Aidan"])
+    assigned_to = st.selectbox("Assign To", ["Unassigned", "Billing", "Support", "Sales",
+                                             "BJ", "Megan", "Billy", "Gillian", "Gabby", "Chuck", "Aidan"])
 
     if st.button("Create Ticket"):
         created_at = datetime.utcnow()
@@ -150,38 +170,21 @@ def page_new_ticket(db):
         db.add(t)
         db.commit()
         st.success(f"✅ Created {t.ticket_key}")
-st.info("Returning to dashboard...")
+        st.info("Returning to dashboard...")
 
-# Mark that redirect is pending
-st.session_state["redirect_to_dashboard"] = True
-st.session_state["created_ticket"] = t.ticket_key
-st.stop()
-
-
-# Clear any residual form values
-for key in ["new_acct", "new_name", "new_phone"]:
-    if key in st.session_state:
-        del st.session_state[key]
-
-# Force navigation back to the main view
-time.sleep(1.5)
-st.query_params.clear()
-
-# Workaround: Streamlit rerun behavior
-try:
-    st.rerun()
-except Exception:
-    st.experimental_rerun()
-
+        # Mark redirect once
+        st.session_state["redirect_to_dashboard"] = True
+        st.session_state["created_ticket"] = t.ticket_key
+        st.stop()
 
 def page_customers_admin():
     st.subheader("👥 Customers")
     st.caption("Preview and Import customer data from Google Sheets.")
-
     sheet_url = st.text_input(
         "Google Sheet URL",
         "https://docs.google.com/spreadsheets/d/1ywqLJIzydhifdUjX9Zo03B536LEUhH483hRAazT3zV8/edit?usp=sharing"
     )
+
     c1, c2 = st.columns(2)
     with c1:
         preview = st.button("🔎 Preview")
@@ -217,6 +220,7 @@ def page_ticket_detail(db, ticket_key):
     st.write("---")
     st.write(t.description or "")
 
+# ---------------- Main App ----------------
 ticket_key = st.query_params.get("ticket")
 if ticket_key:
     with next(get_db()) as db:
