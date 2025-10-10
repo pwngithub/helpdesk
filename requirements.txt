@@ -1,3 +1,5 @@
 streamlit
 sqlalchemy
 pandas
+gspread
+google-auth
