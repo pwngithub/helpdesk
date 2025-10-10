@@ -57,23 +57,32 @@ def normalize_customer_df(df: pd.DataFrame) -> pd.DataFrame:
     return df[["account_number", "name", "phone"]]
 
 def upsert_customers(db, df):
+    """Upsert customers safely even if data types vary (string, float, NaN)."""
     ins = upd = 0
+
     for _, r in df.iterrows():
-        acct = (r.get("account_number") or "").strip()
+        # Convert all fields to strings and strip safely
+        acct = str(r.get("account_number") or "").strip()
+        name = str(r.get("name") or "").strip()
+        phone = str(r.get("phone") or "").strip()
+
         if not acct:
             continue
+
         c = db.query(Customer).filter(Customer.account_number == acct).first()
         if c:
-            for f in ["name", "phone"]:
-                val = (r.get(f) or "").strip()
-                if val:
-                    setattr(c, f, val)
+            if name:
+                c.name = name
+            if phone:
+                c.phone = phone
             upd += 1
         else:
-            db.add(Customer(account_number=acct, name=r.get("name") or "", phone=r.get("phone") or ""))
+            db.add(Customer(account_number=acct, name=name, phone=phone))
             ins += 1
+
     db.commit()
     return ins, upd
+
 
 # ---------------- Pages ----------------
 def page_dashboard(db):
