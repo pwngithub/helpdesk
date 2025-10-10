@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import time
 import urllib.request
 from datetime import datetime
 import pandas as pd
@@ -57,18 +58,13 @@ def normalize_customer_df(df: pd.DataFrame) -> pd.DataFrame:
     return df[["account_number", "name", "phone"]]
 
 def upsert_customers(db, df):
-    """Upsert customers safely even if data types vary (string, float, NaN)."""
     ins = upd = 0
-
     for _, r in df.iterrows():
-        # Convert all fields to strings and strip safely
         acct = str(r.get("account_number") or "").strip()
         name = str(r.get("name") or "").strip()
         phone = str(r.get("phone") or "").strip()
-
         if not acct:
             continue
-
         c = db.query(Customer).filter(Customer.account_number == acct).first()
         if c:
             if name:
@@ -79,16 +75,13 @@ def upsert_customers(db, df):
         else:
             db.add(Customer(account_number=acct, name=name, phone=phone))
             ins += 1
-
     db.commit()
     return ins, upd
-
 
 # ---------------- Pages ----------------
 def page_dashboard(db):
     rows = db.query(Ticket).options(joinedload(Ticket.events)).order_by(Ticket.created_at.desc()).all()
     data = []
-    now = datetime.utcnow()
     for t in rows:
         data.append({
             "Key": f"<a href='?ticket={t.ticket_key}' target='_self'>{t.ticket_key}</a>",
@@ -138,7 +131,7 @@ def page_new_ticket(db):
     description = st.text_area("Description", height=120)
     assigned_to = st.selectbox("Assign To", ["Unassigned","Billing","Support","Sales","BJ","Megan","Billy","Gillian","Gabby","Chuck","Aidan"])
 
-        if st.button("Create Ticket"):
+    if st.button("Create Ticket"):
         created_at = datetime.utcnow()
         t = Ticket(
             ticket_key=f"TCK-{int(created_at.timestamp())}",
@@ -157,14 +150,10 @@ def page_new_ticket(db):
         db.add(t)
         db.commit()
         st.success(f"✅ Created {t.ticket_key}")
-
-        # --- Return to dashboard safely ---
-        import time
-        time.sleep(1.5)  # show success briefly
+        st.info("Returning to dashboard...")
+        time.sleep(1.5)
         st.query_params.clear()
         st.rerun()
-
-
 
 def page_customers_admin():
     st.subheader("👥 Customers")
@@ -204,8 +193,8 @@ def page_ticket_detail(db, ticket_key):
             st.rerun()
         return
     st.title(f"{t.ticket_key} — {t.customer_name}")
-    st.write(f"**Account:** {t.account_number}  \n**Phone:** {t.phone}")
-    st.write(f"**Status:** {t.status}  \n**Priority:** {t.priority}")
+    st.write(f"**Account:** {t.account_number}  \\n**Phone:** {t.phone}")
+    st.write(f"**Status:** {t.status}  \\n**Priority:** {t.priority}")
     st.write("---")
     st.write(t.description or "")
 
@@ -224,3 +213,4 @@ else:
             page_new_ticket(db)
     with tabs[2]:
         page_customers_admin()
+"""
