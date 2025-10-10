@@ -157,6 +157,13 @@ def page_new_ticket(db):
         db.add(t)
         db.commit()
         st.success(f"✅ Created {t.ticket_key}")
+st.info("Returning to dashboard...")
+st.session_state["new_acct"] = ""
+st.session_state["new_name"] = ""
+st.session_state["new_phone"] = ""
+st.query_params.clear()
+st.rerun()
+
 
 def page_customers_admin():
     st.subheader("👥 Customers")
