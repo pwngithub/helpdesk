@@ -120,9 +120,21 @@ def page_dashboard(db):
 def page_new_ticket(db):
     st.subheader("➕ New Ticket")
 
-    acct = st.text_input("Account Number (search)")
-    name = st.text_input("Customer Name (search)")
-    matches = []
+    acct = st.text_input("Account Number (search)", key="acct_search", on_change=None)
+name = st.text_input("Customer Name (search)", key="name_search", on_change=None)
+matches = []
+
+search_term = (acct or name).strip()
+
+# Perform live search while typing
+if search_term:
+    with next(get_db()) as db_search:
+        query = db_search.query(Customer)
+        if acct:
+            matches = query.filter(Customer.account_number.ilike(f"%{acct}%")).limit(20).all()
+        elif name:
+            matches = query.filter(Customer.name.ilike(f"%{name}%")).limit(20).all()
+
 
     if acct.strip():
         matches = db.query(Customer).filter(Customer.account_number.ilike(f"%{acct}%")).all()
