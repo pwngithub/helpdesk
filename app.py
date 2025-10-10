@@ -152,6 +152,12 @@ def page_new_ticket(db):
         st.success(f"✅ Created {t.ticket_key}")
 st.info("Returning to dashboard...")
 
+# Mark that redirect is pending
+st.session_state["redirect_to_dashboard"] = True
+st.session_state["created_ticket"] = t.ticket_key
+st.stop()
+
+
 # Clear any residual form values
 for key in ["new_acct", "new_name", "new_phone"]:
     if key in st.session_state:
