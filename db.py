@@ -1,10 +1,11 @@
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+engine=create_engine('sqlite:///pioneer_helpdesk.db',echo=False)
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./helpdesk.db"
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 def get_db():
-    db = SessionLocal()
-    try: yield db
-    finally: db.close()
+    from sqlalchemy.orm import sessionmaker
+    Session=sessionmaker(bind=engine)
+    db=Session()
+    try:
+        yield db
+    finally:
+        db.close()
