@@ -150,10 +150,23 @@ def page_new_ticket(db):
         db.add(t)
         db.commit()
         st.success(f"✅ Created {t.ticket_key}")
-        st.info("Returning to dashboard...")
-        time.sleep(1.5)
-        st.query_params.clear()
-        st.rerun()
+st.info("Returning to dashboard...")
+
+# Clear any residual form values
+for key in ["new_acct", "new_name", "new_phone"]:
+    if key in st.session_state:
+        del st.session_state[key]
+
+# Force navigation back to the main view
+time.sleep(1.5)
+st.query_params.clear()
+
+# Workaround: Streamlit rerun behavior
+try:
+    st.rerun()
+except Exception:
+    st.experimental_rerun()
+
 
 def page_customers_admin():
     st.subheader("👥 Customers")
